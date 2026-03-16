@@ -1,0 +1,2487 @@
+---
+title: "FriendshipLikeDifferentialCoexpressionAnalysis"
+author: "Alessandro Taraborelli"
+date: "2026-03-16"
+output: html_document
+---
+
+# First Part: Dataset
+
+## clear everything from the workspace
+```{r, include=FALSE}
+rm(list = ls(all.names = TRUE))
+
+
+```
+
+## installing packages
+```{r}
+load_or_install_packages <- function(packages) 
+  {
+    # 1. Assicuriamoci che BiocManager sia installato (serve per Bioconductor)
+  if (!requireNamespace("BiocManager", quietly = TRUE)) 
+    {
+    install.packages("BiocManager")
+    }
+  
+  for (pck in packages) 
+    {
+    # 2. Se il pacchetto NON è installato
+    if (!require(pck, character.only = TRUE)) 
+      {
+      message(paste("Installing :", pck))
+      
+      # 3. Installazione tramite BiocManager (funziona per CRAN e Bioconductor)
+      BiocManager::install(pck, update = FALSE, ask = FALSE)
+      
+      # 4. Caricamento dopo l'installazione
+      library(pck, character.only = TRUE)
+      } 
+    else 
+      {
+      message(paste("Package already installed; loading :", pck))
+      }
+    }
+}
+
+```
+
+```{r}
+# Added by Alessandro
+identifier = "4" # 1: MATTIA, 2: ALESSANDRO, 3: STEFANO
+
+baseFolder <- switch(
+    EXPR = identifier,
+    "1" = "/Users/mattia/Desktop/Università/Magistrale/Tesi/R/_Normalizzazione TMM exploratioR",
+    "2" = "C:/Users/HP/Documents/SapienzaFIS2GitHub/",
+    "4" = "D:/DOTTORATO/SapienzaFIS2GitHub/",
+    "6" = "E:/DOTTORATO/SapienzaFIS2GitHub/"
+)
+functions_directoryFolder = paste0(baseFolder, "R/Script R Tesi")
+
+source(paste0(functions_directoryFolder, "/funzioni.R"))
+source(paste0(functions_directoryFolder, "/TMMbyHand.R"))
+
+if(identifier == "4")
+{
+  load("D:/DOTTORATO/SapienzaFIS2GitHub/R/Script R Tesi/HP.RData")
+}
+
+
+```
+
+
+```{r, include = FALSE}
+libraries_to_load <- c(
+  "stringr", "dplyr", "igraph", "R6", "signnet", 
+  "expm", "ggplot2", "openxlsx", "biomaRt", "pheatmap", "enrichR",
+  "gridExtra", "grid"
+)
+
+load_or_install_packages(libraries_to_load)
+
+```
+
+## Function to extract unique elements from a dataframe
+```{r, include=TRUE}
+
+
+extract_unique_elements <- function(df) 
+  {
+  # Crea una lista vuota
+    result_list <-list()
+
+  # Aggiungi le rownames come primo elemento
+    result_list$rownames <- rownames(df)
+
+  # Scandaglia ogni colonna e aggiungi i valori unici alla lista
+    for (col_name in names(df)) 
+      {
+        result_list[[col_name]] <- unique(df[[col_name]])
+      }
+
+  return(result_list)
+  
+}
+
+debug = TRUE
+
+if (debug)
+{
+  trial_df <- data.frame(
+  Gene =c("Gene1","Gene2","Gene3","Gene1"),
+  Type =c("A","B","A","C"),
+  Value =c(1,2,2,3)
+  )
+  rownames(trial_df) <-c("Sample1","Sample2","Sample3","Sample4")
+  
+  result <- extract_unique_elements(trial_df)
+  print(result)
+}
+
+
+remove_common_elements <-function(df1, df2, column_name) {
+# Trova gli elementi in comune tra le due colonne
+  common_elements <- intersect(df1[[column_name]], df2[[column_name]])
+
+# Se ci sono elementi in comune, rimuovili da entrambi i data frame
+if (length(common_elements) >0) {
+    df1 <- df1[!df1[[column_name]] %in% common_elements, ]
+    df2 <- df2[!df2[[column_name]] %in% common_elements, ]
+  }
+
+# Restituisci i data frame modificati
+return(list(df1 = df1, df2 = df2))
+}
+
+
+
+
+```
+
+## importing of the datA
+```{r, include=FALSE}
+
+data_folder = paste0(functions_directoryFolder, "/Data")
+tep.expr <- read.delim(paste0(data_folder, "/GSE68086_TEP_data_matrix.txt"), row.names=1)
+dim(tep.expr)
+
+patients_specifier_firstDataset = "/patients_GSE68086_corrected.csv"
+patients_firstDataset <- read.csv(paste0(data_folder, patients_specifier_firstDataset), row.names=1, sep=";")
+dim(patients_firstDataset)
+
+annotation_specifier = "/Human.GRCh38.p13.annot.tsv"
+gene.info <- read.delim(paste0(data_folder, annotation_specifier), row.names=1)
+dim(gene.info)
+
+patients_specifier_secondDataset = "/patientGSE156902s_corrected.csv"
+patients_secondDataset = read.csv(paste0(data_folder, patients_specifier_secondDataset), 
+                                  row.names=1, sep=";")
+
+patients_specifier_thirdDataset = "/patients_GSE183635.csv"
+patients_thirdDataset = read.csv(paste0(data_folder, patients_specifier_thirdDataset), 
+                                  row.names=1, sep=";")
+
+list_of_patients_characteristics_firstDataset = extract_unique_elements(patients_firstDataset)
+list_of_patients_characteristics_firstDataset$cancer.type.ch1
+colnames(patients_firstDataset)[colnames(patients_firstDataset) =="cancer.type.ch1"] <-"condition"
+rownames(patients_firstDataset) <- patients_firstDataset$sample_name
+
+
+list_of_patients_characteristics_secondDataset = extract_unique_elements(patients_secondDataset)
+list_of_patients_characteristics_secondDataset$group.ch1
+colnames(patients_secondDataset)[colnames(patients_secondDataset) == 
+                                  "group.ch1"] <- "condition"
+
+list_of_patients_characteristics_thirdDataset = extract_unique_elements(patients_thirdDataset)
+list_of_patients_characteristics_thirdDataset$patient.group.ch1
+colnames(patients_thirdDataset)[colnames(patients_thirdDataset) == 
+                                  "patient.group.ch1"] <- "condition"
+
+remove_common_elements(patients_firstDataset, patients_secondDataset, "geo_accession")
+remove_common_elements(patients_secondDataset, patients_thirdDataset, "geo_accession")
+remove_common_elements(patients_firstDataset, patients_thirdDataset, "geo_accession")
+
+```
+
+```{r}
+
+data_folder = paste0(functions_directoryFolder, "/Data")
+tep_Expressions_firstDataset <- read.delim(paste0(data_folder, "/GSE68086_TEP_data_matrix.txt"), row.names=1)
+# dim(tep.expr)
+
+annotation_specifier = "/Human.GRCh38.p13.annot.tsv"
+gene.info <- read.delim(paste0(data_folder, annotation_specifier), row.names=1)
+patients_firstDataset$sample_name <- sapply(patients_firstDataset$source_name_ch1, 
+                                            function(x) gsub("-", ".", x))
+colnames(tep_Expressions_firstDataset)<- sapply(colnames(tep_Expressions_firstDataset), function(x) sub("X", "", x))
+
+################################
+
+secondDataset_expressionsMatrix_specifier = "/GSE156902_TEP_Count_Matrix.RData"
+a = load(paste0(data_folder, secondDataset_expressionsMatrix_specifier))
+
+tep_Expressions_secondDataset = 
+  as.data.frame(dgeIncludedSamples$counts)
+print(colnames(tep_Expressions_secondDataset)[1:5])
+
+# if(debug_currentChunck){
+# head(patients_secondDataset$name)
+# }
+# patients_secondDataset$name <- sub(".*\\[(.*?)\\].*", "\\1", patients$title)
+# if(debug_currentChunck){
+# head(patients_secondDataset$name)
+# }
+
+
+colnames(tep_Expressions_secondDataset) = 
+  sub("^[^-]*-(.*)", "\\1", colnames(tep_Expressions_secondDataset))
+print(colnames(tep_Expressions_secondDataset)[1:5])
+
+
+rownames(patients_secondDataset) <- 
+  str_extract(rownames(patients_secondDataset), 
+              "\\[([^\\]]+)\\]") %>% gsub("\\[|\\]", "", .)
+
+# Identifica le colonne da escludere (quelle con t seguito da un numero diverso da 0 o O)
+columns_to_exclude <- grep("t[1-9]", colnames(tep_Expressions_secondDataset), value = TRUE)
+
+# Mantieni tutte le colonne tranne quelle da escludere
+columns_to_keep <- setdiff(colnames(tep_Expressions_secondDataset), columns_to_exclude)
+
+# Filtra il data frame
+tep_Expressions_secondDataset_noFollowup <- tep_Expressions_secondDataset[, columns_to_keep, drop = FALSE]
+
+common_subject_noFollowup = intersect(colnames(tep_Expressions_secondDataset_noFollowup), rownames(patients_secondDataset))
+
+
+tep_Expressions_secondDataset_filtered <- tep_Expressions_secondDataset[, colnames(tep_Expressions_secondDataset) %in% common_subject_noFollowup]
+patients_secondDataset_filtered = patients_secondDataset[rownames(patients_secondDataset) %in% common_subject_noFollowup, ]
+
+
+###########################################
+
+data_folder = paste0(functions_directoryFolder, "/Data")
+
+thirdDataset_expressionsMatrix_specifier = "/GSE183635_TEP_Count_Matrix.RData"
+# tep.expr <- read.delim(paste0(data_folder, "/GSE183635_TEP_Count_Matrix.RData"), row.names=1)
+load(paste0(data_folder, thirdDataset_expressionsMatrix_specifier))
+tep_Expressions_thirdDataset = TEP_Count_Matrix
+rm(TEP_Count_Matrix)
+
+# From Mattia
+colnames(tep_Expressions_thirdDataset) = 
+  gsub("^[0-9]+-", "", colnames(tep_Expressions_thirdDataset))
+
+
+
+```
+
+
+
+
+# OBJECT: Gene Analysis
+```{r, include = FALSE}
+
+
+GeneAnalysis = R6Class( 
+  "GeneAnalysis", 
+  public = list(
+    dataset_identifier = NULL,
+    condition_specifier = NULL,
+    control_specifier = NULL,
+    # condition_subjects = NULL,
+    # control_subjects = NULL,
+
+    metadata_subset = NULL,
+    raw_counts = NULL,
+    normalized_counts = NULL,
+    normalized_expressions = NULL,
+    differentialExpressionAnalysis_results = NULL,
+    differentiallyExpressedGenes = NULL,
+    normalized_counts_differentiallyExpressedGenes = NULL,
+    normalized_expressions_differentiallyExpressedGenes = NULL,
+    
+    statisticAnalysis_resultsTable = NULL, 
+    threshold_FDR = NULL,
+    threshold_logCPM = NULL,
+    volcanoPlot = NULL,
+    
+    control_coexpression_analysis = NULL,
+    condition_coexpression_analysis = NULL,
+    
+    zetaScores = NULL,
+    diffCorr_adjacencyMatrix = NULL,
+    friendshipLike_adjacencyMatrix = NULL,
+    
+    metrics_forSignatureGene = NULL,
+    
+    resultsPath = NULL,
+    
+    initialize = function(patients_chosenDataset, tep_Expressions, 
+                          dataset_identifier, target_sick, target_health)
+    {    
+    	tep_Expressions = as.data.frame(tep_Expressions)
+    	self$condition_specifier = target_sick
+    	self$control_specifier = target_health
+    	self$dataset_identifier = dataset_identifier
+      
+      target_groups <- c(target_sick, target_health)
+      metadata_subset <- patients_chosenDataset %>%
+        filter(condition %in% target_groups) %>%
+        mutate(condition = factor(condition, levels = c(target_health, target_sick)))
+      
+      valid_samples <- rownames(metadata_subset)
+      missing_samples <- setdiff(valid_samples, colnames(tep_Expressions))
+      
+      if(length(missing_samples) > 0) {
+        print("I seguenti campioni non sono stati trovati nella matrice:")
+        print(head(missing_samples))
+      } else {
+        print("Tutti i campioni sono presenti")
+      }
+      
+      common_samples <- intersect(colnames(tep_Expressions), valid_samples)
+      raw_counts <- tep_Expressions[, common_samples]
+      metadata_subset <- metadata_subset[common_samples, ]
+      
+      self$metadata_subset = metadata_subset
+      self$raw_counts = raw_counts
+
+    }, 
+    
+    differentiallyExpressionAnalysis = function(chosenMethod = "old", threshold_FDR = 0.01, threshold_logCPM = 3)
+    {
+      raw_counts = self$raw_counts
+      metadata_subset = self$metadata_subset
+      
+      healthy_subjects = 
+        rownames(metadata_subset[metadata_subset$condition == target_health, ])
+      sick_subjects =
+        rownames(metadata_subset[metadata_subset$condition == target_sick, ])
+      
+      # self$condition_subjects = sick_subjects
+      # self$control_subjects = healthy_subjects      
+      
+      
+      group <- metadata_subset$condition
+      design <- model.matrix(~ 0 + group)
+      colnames(design) <- levels(group)
+      colnames(design) <- make.names(colnames(design))
+      cols <- colnames(design)
+      contrast_string <- sprintf("%s - %s", cols[2], cols[1])
+      
+      if (chosenMethod == "old")
+      {
+        raw_counts <- raw_counts %>% filter_all(any_vars(. >= 5))
+  
+        y <- DGEList(counts = raw_counts, group = group)
+        y <- calcNormFactors(y, method = "TMM")
+        normalized_counts = cpm(y, log = TRUE, prior.count = 1, normalized.lib.sizes = F)
+        normalized_expressions = cpm(y, log = TRUE, prior.count = 2)
+        y = estimateDisp(y, design, robust = FALSE)
+        fit = glmFit(y, design=design)
+      }
+      else if (chosenMethod == "new")
+      {
+        y <- DGEList(counts = raw_counts, group = group)
+        keep <- filterByExpr(y, design = design)
+        y <- y[keep, , keep.lib.sizes=FALSE]
+        y <- calcNormFactors(y, method = "TMM")
+        normalized_counts = cpm(y, log = TRUE, prior.count = 1, normalized.lib.sizes = F)
+        normalized_expressions = cpm(y, log = TRUE, prior.count = 2)
+        y = estimateDisp(y, design, robust = TRUE)
+        fit <- glmQLFit(y, design, robust = TRUE)
+      }
+      else
+      {
+        stop("Please, select an option between old or new for the choosenMethod input")
+      }
+      
+      my_contrast <- makeContrasts(contrasts = contrast_string,levels = design)
+      
+      if (chosenMethod == "old")
+      {
+        statisticTest_result <- edgeR::glmLRT(fit,contrast = my_contrast)
+      }
+      else if (chosenMethod == "new")
+      {
+        statisticTest_result <- glmQLFTest(fit, contrast = my_contrast)
+      }
+      else
+      {
+        stop("Please, select an option between old or new for the choosenMethod input")
+      }
+      
+      self$normalized_counts = normalized_counts
+      self$normalized_expressions = normalized_expressions
+      differentialExpressionAnalysis_results = 
+        list(statisticTest_result = statisticTest_result, dge_object = y, 
+                  healthy_subjects = healthy_subjects, sick_subjects = sick_subjects)
+      self$differentialExpressionAnalysis_results = differentialExpressionAnalysis_results
+      
+      statisticAnalysis_resultsTable <- topTags(statisticTest_result, n = nrow(y), adjust.method = "BH")$table
+      self$statisticAnalysis_resultsTable = statisticAnalysis_resultsTable
+    
+      differentiallyExpressedGenes <- statisticAnalysis_resultsTable %>%
+          filter(FDR < threshold_FDR & logCPM > threshold_logCPM)
+      self$threshold_FDR = threshold_FDR
+      self$threshold_logCPM = threshold_logCPM
+      
+      # Aggiunta colonna per direzione
+      differentiallyExpressedGenes$Direction <- 
+        ifelse(differentiallyExpressedGenes$logFC > 0, "Up-regulated", "Down-regulated")
+      
+      
+      normalized_counts_differentiallyExpressedGenes = 
+        normalized_counts[rownames(normalized_counts) %in% rownames(differentiallyExpressedGenes),]
+      normalized_expressions_differentiallyExpressedGenes = 
+        normalized_expressions[rownames(normalized_expressions) %in% rownames(differentiallyExpressedGenes),]      
+      
+      self$differentiallyExpressedGenes = differentiallyExpressedGenes
+      self$normalized_counts_differentiallyExpressedGenes = normalized_counts_differentiallyExpressedGenes
+      self$normalized_expressions_differentiallyExpressedGenes =
+        normalized_expressions_differentiallyExpressedGenes
+      
+      # Output riassuntivo
+      cat("Analisi completata.\n")
+      cat("Numero totale geni testati:", nrow(statisticAnalysis_resultsTable), "\n")
+      # # cat("Numero differentialExpressedGenes identificati (FDR <", threshold_FDR, "& |logFC| >",
+      # # threshold_logFoldChange, "):", nrow(differentialExpressedGenes), "\n")
+      print(table(differentiallyExpressedGenes$Direction))
+      
+      return(differentiallyExpressedGenes)
+    },
+    
+    volcanoPlot_visualization = function(display_volcanoPlot = TRUE)
+    {
+      metriche = self$statisticAnalysis_resultsTable
+      logCPM_threshold = self$threshold_logCPM
+      fdr_threshold = self$threshold_FDR
+      
+      metriche$color <- ifelse(metriche$logCPM < logCPM_threshold, 
+                               "Below LogCPM threshold", "Above LogCPM threshold")
+      metriche$negLogFDR <- -log10(metriche$FDR)
+      volcanoPlot <- ggplot(metriche, aes(x = logFC, y = negLogFDR, color = color)) +
+      geom_point(alpha = 0.6) +  # Aggiunge i punti con trasparenza
+      scale_color_manual(
+        values = c("Below LogCPM threshold" = "red", "Above LogCPM threshold" = "green"),
+        name = "logCPM"  # Nome della legenda
+      ) +
+      # Aggiungi griglia
+      theme_minimal() +
+      theme(
+        panel.grid.major = element_line(color = "darkgray", linetype = "solid"),
+        panel.grid.minor = element_line(color = "darkgray", linetype = "solid"),
+        legend.position = "right"  # Posizione della legenda
+      ) +
+      # Linea per la soglia FDR
+      geom_hline(
+        yintercept = -log10(fdr_threshold),
+        linetype = "dashed",
+        color = "blue",
+        linewidth = 1
+      ) +
+      # Annotazione per la soglia FDR
+      annotate(
+        "text",
+        x = max(metriche$logFC),
+        y = -log10(fdr_threshold) + 0.5,  # Posizione leggermente sopra la linea
+        label = paste("FDR =", fdr_threshold),
+        color = "blue",
+        size = 1
+      ) +
+      # Linee per le soglie di logFC (opzionale)
+      geom_vline(
+        xintercept = c(-0.5, 0.5),
+        linetype = "dashed",
+        color = "blue",
+        linewidth = 1
+      ) +
+      # Etichette e titolo
+      labs(
+        title = "Volcano Plot (LogFC vs FDR)",
+        x = "Log Fold Change (logFC)",
+        y = "-log10(FDR)"
+      )
+      self$volcanoPlot = volcanoPlot
+      
+      if(display_volcanoPlot)
+      {
+      print(volcanoPlot)        
+      }
+
+      
+    },
+    
+    autocorrelation_analysis = function(expressionMatrix, method = "pearson")
+    {
+      coexpressionMatrix = cor(t(expressionMatrix), use = "complete.obs", method = method)
+      diag(coexpressionMatrix) = diag(coexpressionMatrix) = 0
+      transformed_coexpressionMatrix = apply(coexpressionMatrix, 2, ft)
+    
+      
+      relative_expressionMatrix = sweep(expressionMatrix, 1, rowMeans(expressionMatrix))
+      relative_coexpressionMatrix = cor(t(relative_expressionMatrix), use = "complete.obs", method = method)
+      diag(relative_coexpressionMatrix) = diag(relative_coexpressionMatrix) = 0
+    
+    
+      
+      transformed_relative_coexpressionMatrix = apply(relative_coexpressionMatrix, 2, ft)
+      
+      return(list(relative_expressionMatrix = relative_expressionMatrix,
+                  relative_coexpressionMatrix = relative_coexpressionMatrix, 
+                  coexpressionMatrix = coexpressionMatrix,
+                  transformed_relative_coexpressionMatrix = transformed_relative_coexpressionMatrix, 
+                  transformed_coexpressionMatrix = transformed_coexpressionMatrix))
+    },  
+    
+    coexpressions_and_differentialCoexpressions_computation = 
+      function(method = "pearson", expressions_type = "counts",
+               threshold = 3, upper_threshold = 3.255, lower_threshold = 0.465)
+    {
+      if (expressions_type == "counts")
+      {
+        expressions = self$normalized_counts_differentiallyExpressedGenes
+      }
+      if (expressions_type == "expressions")
+      {
+        expressions = self$normalized_expressions_differentiallyExpressedGenes
+      }
+      
+      healthy_subjects = self$differentialExpressionAnalysis_results$healthy_subjects
+      sick_subjects = self$differentialExpressionAnalysis_results$sick_subjects
+
+      control_expressionMatrix = expressions[, healthy_subjects]
+      condition_expressionMatrix = expressions[, sick_subjects]
+      number_of_controlSamples = dim(control_expressionMatrix)[2]
+      number_of_conditionSamples = dim(condition_expressionMatrix)[2]
+      
+      
+      control_coexpression_analysis = 
+        self$autocorrelation_analysis(control_expressionMatrix, method = "pearson")
+      control_relative_geneExpressionMatrix = control_coexpression_analysis$relative_expressionMatrix
+      control_geneCoexpressionMatrix = control_coexpression_analysis$relative_coexpressionMatrix
+      control_transformed_geneCoexpressionMatrix =
+      control_coexpression_analysis$transformed_relative_coexpressionMatrix
+      
+      condition_coexpression_analysis = 
+        self$autocorrelation_analysis(condition_expressionMatrix, method = "pearson")
+      condition_relative_geneExpressionMatrix = condition_coexpression_analysis$relative_expressionMatrix
+      condition_geneCoexpressionMatrix = condition_coexpression_analysis$relative_coexpressionMatrix
+      condition_transformed_geneCoexpressionMatrix =
+        condition_coexpression_analysis$transformed_relative_coexpressionMatrix
+      
+      control_coexpression_analysis = self$control_coexpression_analysis
+      condition_coexpression_analysis = self$condition_coexpression_analysis
+      
+      
+      zscores <- mapply(z,as.data.frame(condition_transformed_geneCoexpressionMatrix),
+                        as.data.frame(control_transformed_geneCoexpressionMatrix),
+                        number_of_conditionSamples, number_of_controlSamples)
+    
+      rownames(zscores) <- colnames(zscores)
+    
+      adjacency.matrix <- ifelse(zscores > (threshold), 1, ifelse(zscores < (-threshold), -1, 0))
+      diag(adjacency.matrix) <- 0
+
+      
+      diffCorr_adjacencyMatrix = adjacency.matrix
+      rm(adjacency.matrix)
+
+    
+      adjacency.matrix <- ifelse(abs(zscores) < (lower_threshold), 1, 
+                                 ifelse( abs(zscores) > (upper_threshold), -1, 0))
+      diag(adjacency.matrix) <- 0
+      friendshipLike_adjacencyMatrix = adjacency.matrix
+      
+      self$zetaScores = zscores
+      self$diffCorr_adjacencyMatrix = diffCorr_adjacencyMatrix
+      self$friendshipLike_adjacencyMatrix = friendshipLike_adjacencyMatrix
+      
+      comparison_coefficient = 
+        sqrt(1/ ( (1/(number_of_conditionSamples-3)) + (1/(number_of_controlSamples - 3)) ) )
+        
+      
+      return(list(control_coexpression_analysis = control_coexpression_analysis, 
+                  condition_coexpression_analysis = condition_coexpression_analysis,
+                  number_of_controlSamples = number_of_controlSamples, 
+                  number_of_conditionSamples = number_of_conditionSamples,
+                  zetaScores = zscores, diffCorr_adjacencyMatrix = diffCorr_adjacencyMatrix,
+                  friendshipLike_adjacencyMatrix = friendshipLike_adjacencyMatrix, 
+                  comparison_coefficient = comparison_coefficient))
+      
+      
+      
+    },
+    
+    graphVisualizer = function()
+    {},
+    
+    localBalanceIndex_computation = function(friendshipLike_adjacencyMatrix = NULL, type = "TriangleBased")
+    {
+      if(is.null(friendshipLike_adjacencyMatrix))
+      {
+        friendship_like_DCEN_adjacencyMatrix = self$friendshipLike_adjacencyMatrix
+      }
+      else
+      {
+        friendship_like_DCEN_adjacencyMatrix = friendshipLike_adjacencyMatrix
+      }
+      friendship_like_DCEN_graph =  
+        graph_from_adjacency_matrix(friendship_like_DCEN_adjacencyMatrix,mode = "undirected", weighted = TRUE)
+      E(friendship_like_DCEN_graph)$sign = E(friendship_like_DCEN_graph)$weight
+      
+      if(type == "TriangleBased")
+      {
+        triangleCicle_friendship_like_DCEN = 
+          (friendship_like_DCEN_adjacencyMatrix) %^% 3
+        triangleCicle_absolute_friendship_like_DCEN = 
+          (abs(friendship_like_DCEN_adjacencyMatrix)) %^% 3
+        localBalanceIndex = 
+          diag(triangleCicle_friendship_like_DCEN)/diag(triangleCicle_absolute_friendship_like_DCEN)    
+      }
+      else if(type == "AllCicles")
+      {
+        closedWalksInformation_friendship_like_DCEN = expm::expm(friendship_like_DCEN_adjacencyMatrix) 
+        closedWalksInformation_absolute_friendship_like_DCEN =
+          expm::expm(abs(friendship_like_DCEN_adjacencyMatrix))
+        localBalanceIndex = diag(closedWalksInformation_friendship_like_DCEN) /
+          diag(closedWalksInformation_absolute_friendship_like_DCEN)    
+      }
+      else
+      {
+        stop("Please select a type between TriangleBased and AllCicles")
+      }
+      
+      return(localBalanceIndex)      
+    }, 
+    
+    metrics_forSignatureGenesSearching = function(diffCorr_adjacencyMatrix = NULL, friendshipLike_adjacencyMatrix = NULL,
+                                                  compute_allCicles = FALSE, display_histograms = TRUE)
+    {
+      if (is.null(diffCorr_adjacencyMatrix))
+      {
+        signed_adjacencyMatrix <- self$diffCorr_adjacencyMatrix
+      }
+      else 
+      {
+        signed_adjacencyMatrix = diffCorr_adjacencyMatrix
+      }
+      
+      if(is.null(friendshipLike_adjacencyMatrix))
+      {
+        friendshipLike_adjacencyMatrix = self$friendshipLike_adjacencyMatrix
+      }
+      else
+      {
+        friendshipLike_adjacencyMatrix = friendshipLike_adjacencyMatrix
+      }
+
+
+      
+      unsigned_adjacencyMatrix <- abs(signed_adjacencyMatrix)
+      network <- graph_from_adjacency_matrix(unsigned_adjacencyMatrix)
+      
+      
+      metrics <- list(
+        "Gene" = V(network)$name,
+        "degree_centrality" = igraph::degree(network),
+        "betweenness_centrality"= igraph::betweenness(network),
+        "closeness_centrality"=   igraph::closeness(network),
+        "eigenvector_centrality" = igraph::eigen_centrality(network)$vector,
+        "local_clustering_coefficient" = igraph::transitivity(network, type="local")
+      )
+      
+      localBalanceIndex_triangleBased = self$localBalanceIndex_computation(friendshipLike_adjacencyMatrix)
+      metrics[["LBI.TB.FL"]] = localBalanceIndex_triangleBased
+      if(compute_allCicles)
+      {
+        localBalanceIndex_allCicles = 
+          self$localBalanceIndex_computation(friendshipLike_adjacencyMatrix, type = "AllCicles")
+        metrics[["LBI.FL"]] = localBalanceIndex_allCicles
+        
+        if(display_histograms)
+        {
+          hist(localBalanceIndex_allCicles)
+          plot(1:length(localBalanceIndex_allCicles), sort(localBalanceIndex_allCicles))
+          sorted_localBalanceIndex_allCicles = as.data.frame(sort(localBalanceIndex_allCicles))
+        }
+      }
+      
+      if(display_histograms)
+      {
+        hist(localBalanceIndex_triangleBased)
+        plot(1:length(localBalanceIndex_triangleBased), sort(localBalanceIndex_triangleBased))
+        sorted_localBalanceIndex_triangleBased = as.data.frame(sort(localBalanceIndex_triangleBased))     
+        
+        hist(metrics$betweenness_centrality)
+        hist(metrics$degree_centrality)
+        hist(metrics$closeness_centrality)
+        hist(metrics$eigenvector_centrality)
+        hist(metrics$local_clustering_coefficient)
+      }
+      
+      self$metrics_forSignatureGene = metrics 
+      return(metrics)
+
+    },
+    
+    
+    
+    trainSet_maker = function(metricSelected, metricSelected_fileName, direction, percentage = 5, save = TRUE)
+    {
+      normalized_counts = self$normalized_counts
+    	control_specifier = self$control_specifier
+    	condition_specifier = self$condition_specifier
+    	metrics = self$metrics_forSignatureGene
+    
+      p = percentage/100
+      
+      metrics_dataframeFormat = as.data.frame(metrics)
+      metrics_dataframeFormat[is.na(metrics_dataframeFormat)] <- 0
+      
+      metricSelected[is.na(metricSelected)] <- 0
+    
+      
+      if(direction == "up")
+      {
+        threshold = 1 - p
+        quantileSelected = quantile(metricSelected, probs = c(threshold))
+        genesSelected = metrics_dataframeFormat[metricSelected > quantileSelected, ]$Gene
+      }
+      if(direction == "down")
+      {
+        threshold = p
+        quantileSelected = quantile(metricSelected, probs = c(threshold))
+        genesSelected = metrics_dataframeFormat[metricSelected < quantileSelected, ]$Gene
+      }
+      if(direction == "both")
+      {
+        upper_threshold = 1 - (p/2)
+        lower_threshold = p/2
+        upper_quantileSelected = quantile(metricSelected, probs = c(upper_threshold))
+        lower_quantileSelected = quantile(metricSelected, probs = c(lower_threshold))
+        genesSelected <- metrics[metricSelected < lower_quantileSelected | 
+                                   metricSelected > upper_quantileSelected, ]$Gene
+      }
+      
+      normalized_counts_selectedGenes = normalized_counts[rownames(normalized_counts) %in% genesSelected, ]
+    
+      normalized_counts_selectedGenes_transpose = as.data.frame(t(normalized_counts_selectedGenes))
+      subject_selected = intersect(rownames(normalized_counts_selectedGenes_transpose),
+                                   rownames(self$metadata_subset))
+      conditions = self$metadata_subset[subject_selected, "condition"]
+    
+      normalized_counts_selectedGenes_transpose$condition = conditions
+      normalized_counts_selectedGenes_learningFormat = normalized_counts_selectedGenes_transpose
+      normalized_counts_selectedGenes_learningFormat$condition =
+        ifelse(normalized_counts_selectedGenes_learningFormat$condition == control_specifier, 1,
+           ifelse(normalized_counts_selectedGenes_learningFormat$condition == condition_specifier, 0, NA))
+    
+      
+      if (save == TRUE)
+      {
+        write.csv(normalized_counts_selectedGenes_learningFormat, 
+              file = metricSelected_fileName, row.names = TRUE)
+      }
+      
+      return(genesSelected)      
+    },
+    
+    trainSet_making = function(folder, supplementary_subfolder_specification = NULL, save = TRUE)
+    {
+      metrics = self$metrics_forSignatureGene
+      metrics_and_genes = self$metrics_forSignatureGene
+      condition_specifier = self$condition_specifier 
+      control_specifier = self$control_specifier
+      
+      # Lista dei campi da escludere per la direzione "up"
+      down_fields <-c("LBI.TB.FL","LBI.FL")
+      
+      # Inizializza il vettore direction
+      direction <- character(length(metrics) -1)# Escludi il campo Gene
+      
+      # Inizializza l'indice per il vettore direction
+      direction_index <- 1
+    
+      
+      # Ciclo for per iterare attraverso i campi della lista metrics, escludendo Gene
+      for (i in names(metrics)) 
+      {
+        if (i !="Gene") 
+        {
+          metricSelected_identifier <- i
+        
+        # Assegna "up" a direction, tranne per i campi esclusi
+          if (!(metricSelected_identifier %in% down_fields)) 
+          {
+            direction[direction_index] <-"up"
+          } else { 
+            direction[direction_index] <-"down"# o NA, se preferisci
+          }
+          
+          # Stampa il nome del campo e la direzione
+          print(paste("metricSelected_identifier:", metricSelected_identifier))
+          print(paste("quantile_direction:", direction[direction_index]))
+          
+          metricSelected = metrics[[metricSelected_identifier]]
+          metricSelected_path = paste0(folder, "/train", dataset_identifier, "/", 
+                                       condition_specifier, "_vs_",control_specifier, "/")
+          if (!is.null(supplementary_subfolder_specification))
+          {
+      	    metricSelected_path = paste0(metricSelected_path, supplementary_subfolder_specification, "/")
+          }
+          if (!dir.exists(metricSelected_path)) 
+          {
+            dir.create(metricSelected_path, recursive = TRUE)  
+          }
+          
+          metricSelected_fileName = 
+            paste0(metricSelected_path,  metricSelected_identifier, "_trainingSet.csv")  
+          self$resultsPath = metricSelected_path
+          geneIdentified = 
+            self$trainSet_maker(metricSelected = metricSelected, 
+                                metricSelected_fileName = metricSelected_fileName, 
+                                direction = direction[direction_index], save = save)
+        
+          metrics_and_genes[[metricSelected_identifier]] = 
+            list(metric_selected = metricSelected, gene_identified = geneIdentified)
+          
+          # Incrementa l'indice per il vettore direction
+          direction_index <- direction_index +1
+          
+        }
+        
+      }
+      
+      return(metrics_and_genes)
+
+    }
+
+    
+    
+  )
+)
+
+```
+
+## ID Conversion Function
+```{r}
+library(openxlsx)
+library(biomaRt)
+convert_ensembl_to_names <- function(ensembl_ids) {
+  # Connessione a Ensembl
+  ensembl <- useEnsembl(biomart = "genes", dataset = "hsapiens_gene_ensembl")
+
+  # Filtra gli ID non validi
+  valid_ensembl_ids <- ensembl_ids[!is.na(ensembl_ids) & ensembl_ids != ""]
+
+  if (length(valid_ensembl_ids) == 0) {
+    message("Nessun ID Ensembl valido fornito.")
+    return(data.frame())
+  }
+
+  # Mappatura degli ID
+  genes <- tryCatch(
+    {
+      getBM(
+        attributes = c(
+          "ensembl_gene_id",
+          "external_gene_name",
+          "entrezgene_id"
+        ),
+        filters = "ensembl_gene_id",
+        values = valid_ensembl_ids,
+        mart = ensembl
+      )
+    },
+    error = function(e) {
+      message("Errore durante la conversione degli ID Ensembl: ", e$message)
+      return(data.frame())
+    }
+  )
+
+  return(genes)
+}
+
+```
+
+## Comparison between GBM
+
+### Gene Analysis 2nd Dataset
+```{r}
+
+tep_Expressions = tep_Expressions_secondDataset 
+# tep_Expressions_firstDataset, tep_Expressions_secondDataset; tep_Expressions_thirdDataset
+patient_chosenDataset = patients_secondDataset
+# patients_firstDataset, patients_secondDataset, patients_thirdDataset
+unique(patient_chosenDataset$condition)
+dataset_identifier = "GSE156902" # "GSE68086"; "GSE156902"; "GSE183635"
+target_sick = "GBM"
+target_health = "asymptomaticControls" # HC; ; Asymptomatic Controls; asymptomaticControls
+
+folder = paste0(baseFolder, "FixedWorkflow")
+supplementary_subfolder = "analysis_of_threshold"
+expressions_type = "expressions"
+
+geneAnalysis_secondDataset = 
+  GeneAnalysis$new(patient_chosenDataset, tep_Expressions, dataset_identifier, 
+                   target_sick, target_health)
+
+
+differentiallyExpressedGenes_secondDataset =
+  geneAnalysis_secondDataset$differentiallyExpressionAnalysis()
+
+
+coexpressions_and_differentialCoexpressions_results_secondDataset =  
+  geneAnalysis_secondDataset$coexpressions_and_differentialCoexpressions_computation(
+    expressions_type)
+
+# geneAnalysis_secondDataset_copy = geneAnalysis_secondDataset$clone()
+
+comparison_coefficient_secondDataset = 
+  coexpressions_and_differentialCoexpressions_results_secondDataset$comparison_coefficient
+
+
+```
+
+
+### Gene Analysis 3rd Dataset
+```{r}
+
+tep_Expressions = tep_Expressions_thirdDataset 
+# tep_Expressions_firstDataset, tep_Expressions_secondDataset; tep_Expressions_thirdDataset
+patient_chosenDataset = patients_thirdDataset
+# patients_firstDataset, patients_secondDataset, patients_thirdDataset
+unique(patient_chosenDataset$condition)
+dataset_identifier = "GSE183635" # "GSE68086"; "GSE156902"; "GSE183635"
+target_sick = "Glioma"
+target_health = "Asymptomatic Controls" # HC; ; Asymptomatic Controls; asymptomaticControls
+
+# folder = "D:/DOTTORATO/SapienzaFIS2GitHub/FixedWorkflow"
+folder = paste0(baseFolder, "FixedWorkflow")
+supplementary_subfolder = "analysis_of_threshold"
+expressions_type = "expressions"
+
+geneAnalysis_thirdDataset = 
+  GeneAnalysis$new(patient_chosenDataset, tep_Expressions, dataset_identifier, 
+                   target_sick, target_health)
+
+
+differentiallyExpressedGenes_thirdDataset =
+  geneAnalysis_thirdDataset$differentiallyExpressionAnalysis()
+
+
+coexpressions_and_differentialCoexpressions_results_thirdDataset =  
+  geneAnalysis_thirdDataset$coexpressions_and_differentialCoexpressions_computation(
+    expressions_type)
+
+# geneAnalysis_thirdDataset_copy = geneAnalysis_thirdDataset$clone()
+
+
+comparison_coefficient_thirdDataset = 
+  coexpressions_and_differentialCoexpressions_results_thirdDataset$comparison_coefficient
+
+# metrics_forSignatureGenes_thirdDataset = 
+#   geneAnalysis_thirdDataset$metrics_forSignatureGenesSearching(
+#     compute_allCicles = FALSE, display_histograms = FALSE)
+
+```
+
+
+# OBJECT: frienshipLike_comparison
+```{r}
+friendshipLike_comparison = R6Class(
+	"friendshipLike_comparison",
+	public = list(
+	
+	geneAnalysis_1 = NULL,
+	geneAnalysis_2 = NULL,
+	zetaScores_1 = NULL,
+	zetaScores_2 = NULL,
+	number_of_topGenes = NULL,
+	comparison_list = NULL,
+	upper_probability_to_check = NULL,
+	lower_probability_to_check  = NULL,
+	upper_threshold_matrix_1 = NULL,
+	upper_threshold_matrix_2 = NULL,
+	lower_threshold_matrix_1 = NULL,
+	lower_threshold_matrix_2 = NULL,
+  sign_proportions = NULL,
+	edge_percentage = NULL,
+	couple_edgePercentage_signProportions = NULL,
+	common_genes_perThreshold = NULL,
+	actual_common_genes_perThreshold = NULL,
+	results_ofGenes_identification_1 = NULL,
+	results_ofGenes_identification_2 = NULL,
+	results_intersection_identified = NULL,
+	counter_of_result_ofGenes_identification = NULL,
+	
+	initialize = function(geneAnalysis_1, geneAnalysis_2, upper_probability_to_check = NULL, lower_probability_to_check = NULL,
+	                      edge_percentage = c(0.10, 0.20, 0.30, 0.40), sign_proportions = c(0.95, 0.90, 0.85, 0.80))
+	{
+		self$geneAnalysis_1 = geneAnalysis_1
+		self$geneAnalysis_2 = geneAnalysis_2
+		self$zetaScores_1 = geneAnalysis_1$zetaScores
+		self$zetaScores_2 = geneAnalysis_2$zetaScores
+
+		
+		if (is.null(upper_probability_to_check) || is.null(lower_probability_to_check)) 
+		{
+		  self$sign_proportions = sign_proportions
+		  self$edge_percentage = edge_percentage
+      edges_expanded <- rep(edge_percentage, each = length(sign_proportions))
+      signs_expanded <- rep(sign_proportions, times = length(edge_percentage))
+      self$couple_edgePercentage_signProportions = rbind(edges_expanded, signs_expanded)
+      lower_probability_to_check <- edges_expanded * signs_expanded
+      upper_probability_to_check <- 1 - (edges_expanded * (1 - signs_expanded))
+		}
+		
+		self$upper_probability_to_check = upper_probability_to_check
+		self$lower_probability_to_check = lower_probability_to_check
+		
+		template_matrix = matrix(0, nrow = length(sign_proportions), ncol = length(edge_percentage))
+		rownames(template_matrix) = paste0(sign_proportions*100, "(+)")
+		colnames(template_matrix) = paste0(edge_percentage, "%")
+		
+		self$upper_threshold_matrix_1 = template_matrix
+		self$upper_threshold_matrix_2 = template_matrix
+		self$lower_threshold_matrix_1 = template_matrix
+		self$lower_threshold_matrix_2 = template_matrix
+		
+		
+		common_genes_perThreshold = vector("double", length(upper_probability_to_check))
+		actual_common_genes_perThreshold = vector("double", length(upper_probability_to_check))
+		self$common_genes_perThreshold = common_genes_perThreshold
+		self$actual_common_genes_perThreshold = actual_common_genes_perThreshold
+		
+		self$results_ofGenes_identification_1 = 
+		  vector("list", length(upper_probability_to_check)+1)
+		self$results_ofGenes_identification_1[[1]] =
+		  rownames(geneAnalysis_1$differentiallyExpressedGenes)
+		self$results_ofGenes_identification_2 = 
+		  vector("list", length(upper_probability_to_check)+1)
+		self$results_ofGenes_identification_2[[1]] =
+		  rownames(geneAnalysis_2$differentiallyExpressedGenes)
+		self$counter_of_result_ofGenes_identification = 2
+
+	},
+	
+	
+	topN_genes_identifier = function(geneAnalysis, lower_threshold, upper_threshold, number_of_topGenes = 100, compute_allCicles = FALSE)
+	{
+		coexpressions_and_differentialCoexpressions_results = 
+			geneAnalysis$coexpressions_and_differentialCoexpressions_computation(
+			      expressions_type = "expressions", 
+			      lower_threshold = lower_threshold,
+			      upper_threshold = upper_threshold)
+	  metrics_forSignatureGenes =
+			  geneAnalysis$metrics_forSignatureGenesSearching(
+				  compute_allCicles = compute_allCicles, display_histograms = FALSE)
+	  
+		df <- data.frame(
+			  Genes = metrics_forSignatureGenes$Gene, 
+			  LBI.TB.FL = metrics_forSignatureGenes$LBI.TB.FL) 
+	  df = df[order(df$LBI.TB.FL), ]
+		topN_genes = df$Genes[1:number_of_topGenes ]
+		
+		return(list(df = df, topN_genes = topN_genes))
+		
+	},
+	
+	friendshipLike_intraDataset_thresholdAnalysis = 
+		function(lower_threshold_1, upper_threshold_1, lower_threshold_2, upper_threshold_2, number_of_topGenes,
+						 compute_allCicles = FALSE)
+	{
+		geneAnalysis_1 = self$geneAnalysis_1
+		geneAnalysis_2 = self$geneAnalysis_2
+		results_ofGenes_identification_1 =  
+			self$topN_genes_identifier(geneAnalysis_1, lower_threshold_1, upper_threshold_1, 
+			                           number_of_topGenes = number_of_topGenes, compute_allCicles = compute_allCicles)
+		self$results_ofGenes_identification_1[[self$counter_of_result_ofGenes_identification]] = results_ofGenes_identification_1
+		# df_1 = results_ofGenes_identification_1$df
+		topN_genes_1 = results_ofGenes_identification_1$topN_genes
+			
+		results_ofGenes_identification_2 =  
+			self$topN_genes_identifier(geneAnalysis_2, lower_threshold_2, upper_threshold_2,
+			                           number_of_topGenes = number_of_topGenes, compute_allCicles = compute_allCicles)
+		self$results_ofGenes_identification_2[[self$counter_of_result_ofGenes_identification]] = results_ofGenes_identification_2
+		# df_2 = results_ofGenes_identification_2$df
+		topN_genes_2= results_ofGenes_identification_2$topN_genes
+				
+		common_genes = intersect(topN_genes_1, topN_genes_2)
+	  
+	  return(common_genes)
+	},
+	
+	compute_comparison = function(number_of_topGenes = 100)
+	{
+		upper_probability_to_check = self$upper_probability_to_check
+		lower_probability_to_check = self$lower_probability_to_check
+		zetaScores_1 = self$zetaScores_1
+		zetaScores_2 = self$zetaScores_2
+  	self$number_of_topGenes = number_of_topGenes
+
+
+		for (i in seq_along(self$common_genes_perThreshold))
+		{
+		  upper_threshold_1 = 
+			  as.numeric(quantile(abs(zetaScores_1) , probs = upper_probability_to_check[i]))
+		  upper_threshold_2 = 
+			  as.numeric(quantile(abs(zetaScores_2) , probs = upper_probability_to_check[i]))
+		  
+		  self$upper_threshold_matrix_1[i] = upper_threshold_1
+		  self$upper_threshold_matrix_2[i] = upper_threshold_2
+		  
+		  lower_threshold_1 = 
+		    as.numeric(quantile(abs(zetaScores_1) , probs = lower_probability_to_check[i]))
+		  lower_threshold_2 =
+		    as.numeric(quantile(abs(zetaScores_2) , probs = lower_probability_to_check[i]))
+		  
+  		self$lower_threshold_matrix_1[i] = lower_threshold_1
+	  	self$lower_threshold_matrix_2[i] = lower_threshold_2
+		  
+		  cat(sprintf("  - comparison number : %d\n", i))
+		
+		  cat(sprintf("  - upper Percentile : %f\n", upper_probability_to_check[i]))
+		  cat(sprintf("  - upper threshold 1: %f;  upper threshold 2:%f \n", 
+		              upper_threshold_1, upper_threshold_2))
+
+		  cat(sprintf("  - lower Percentile : %f\n", lower_probability_to_check[i]))
+		  cat(sprintf("  - lower threshold 1: %f;  lower threshold 2:%f \n", 
+		              lower_threshold_1, lower_threshold_2))
+		
+			
+			common_genes = self$friendshipLike_intraDataset_thresholdAnalysis(
+				lower_threshold_1, upper_threshold_1,
+				lower_threshold_2, upper_threshold_2,
+				number_of_topGenes = number_of_topGenes,
+				compute_allCicles = FALSE)
+			
+      df_1 = self$results_ofGenes_identification_1[[self$counter_of_result_ofGenes_identification]]$df
+      topN_genes_1 = 
+        self$results_ofGenes_identification_1[[self$counter_of_result_ofGenes_identification]]$topN_genes
+      df_2 = self$results_ofGenes_identification_2[[self$counter_of_result_ofGenes_identification]]$df
+  		topN_genes_2= 
+  		  self$results_ofGenes_identification_2[[self$counter_of_result_ofGenes_identification]]$topN_genes
+  		
+      self$counter_of_result_ofGenes_identification =
+        self$counter_of_result_ofGenes_identification + 1
+
+
+    	
+  		number_of_common_genes = as.numeric(length(common_genes))
+  		self$common_genes_perThreshold[i] = number_of_common_genes/number_of_topGenes 
+  		
+  	  cat(sprintf("  - number of common genes beetween best%d : %d\n\n\n", number_of_topGenes, number_of_common_genes))
+  	
+  	  
+  		list_ofResults_currentIteration = 
+  			 list(metric_report_1 = df_1,
+  						metric_report_2 = df_2,
+  						common_genes_identified = common_genes)
+  	  self$comparison_list[[i]] = list_ofResults_currentIteration
+		
+			degs_1 = rownames(self$geneAnalysis_1$differentiallyExpressedGenes)
+			degs_2 = rownames(self$geneAnalysis_2$differentiallyExpressedGenes)
+			common_degs = intersect(degs_1,degs_2)
+			
+			common_degs_in_topN_genes_1 = sum(topN_genes_1 %in% common_degs)
+			common_degs_in_topN_genes_2 = sum(topN_genes_2 %in% common_degs)
+			
+			self$actual_common_genes_perThreshold[i] = number_of_common_genes/(min(common_degs_in_topN_genes_1, common_degs_in_topN_genes_2))
+			
+  	   
+		}
+		
+	},
+	
+	barplot_displayer = function(actualized_geneFraction = FALSE)
+	{
+	  if(actualized_geneFraction)
+	  {
+      commonGene_fraction = self$actual_common_genes_perThreshold
+      data_matrix <- 
+        matrix(commonGene_fraction, nrow = length(self$sign_proportions),
+               ncol = length(self$edge_percentage))
+      mainTitle = "Common Recoverable Genes Between Datasets"
+      ylabel = "fraction of recoverable genes"
+      yLimitations = c(0, max(commonGene_fraction) + 0.2)
+	  }
+	  else
+	  {
+      commonGene_fraction = self$common_genes_perThreshold
+      commonGene_total = self$common_genes_perThreshold*100
+      data_matrix <- 
+        matrix(commonGene_total, nrow = length(self$sign_proportions),
+               ncol = length(self$edge_percentage))
+      mainTitle = "Common Genes Between Datasets"
+      ylabel = "number of common genes"
+      yLimitations = c(0, max(commonGene_total) + 10)
+
+	  }
+	  
+    # data_matrix <- 
+    #     matrix(commonGene_fraction, nrow = length(self$sign_proportions),
+    #            ncol = length(self$edge_percentage))
+
+	  base_colors <- c("#3498db", "#e74c3c", "#2ecc71", "#f1c40f") 
+	  N = length(self$sign_proportions) 
+	  
+	  if (N <= 4) 
+	  {
+      bar_colors <- base_colors[1:N]
+    } 
+	  else 
+	  {
+      extra_colors <- rainbow(N - 4) 
+      bar_colors <- c(base_colors, extra_colors)
+    }
+	  
+	  group_names <- paste0(self$edge_percentage * 100, "% of Edges")
+	  
+	  legend_labels <- paste0( "+/- proportions: ", self$sign_proportions * 100, "/", (1 - self$sign_proportions) * 100)
+
+	  par(mar = c(5, 5, 4, 2))
+
+    bp <- barplot(data_matrix, 
+            beside = TRUE,                         # Mette le barre affiancate
+            col = bar_colors,                      # Applica i 4 colori ciclicamente
+            names.arg = group_names,               # Etichette asse X
+            ylab = ylabel,       # Etichetta asse Y
+            main = mainTitle,   # Titolo opzionale
+            border = "white",                      # Bordo delle barre per pulizia estetica
+            ylim = yLimitations) # Spazio extra per la legenda
+    legend("topright", 
+           legend = legend_labels, 
+           fill = bar_colors, 
+           bty = "n",       # Rimuove il bordo della legenda
+           cex = 0.8)       # Dimensione del testo della legenda
+
+
+	},
+	
+	results_intersection = function()
+	{
+	  comparison_list = self$comparison_list
+    number_ofedgePercentages = length(self$edge_percentage)
+    number_ofSignProportions = length(self$sign_proportions)
+    names_of_list_elements = c("all_genes","overal_common","same_edgePercentage_common","same_signProportion_common")
+    number_ofTotalCase = number_ofSignProportions*number_ofedgePercentages
+    results_intersection_identified = vector("list", length(names_of_list_elements))
+    names(results_intersection_identified ) <- names_of_list_elements
+    
+    all_gene_vectors <- lapply(self$comparison_list, function(x) x$common_genes_identified)
+    all_genes_from_all_comparison_genes_identified = Reduce(union, all_gene_vectors)
+    results_intersection_identified$all_genes = 
+    	list(genes = all_genes_from_all_comparison_genes_identified, 
+    			 number_of_genes = length(all_genes_from_all_comparison_genes_identified))
+    genes_from_all_comparison_genes_identified <- Reduce(intersect, all_gene_vectors)
+    results_intersection_identified$overal_common = 
+    	list(genes = genes_from_all_comparison_genes_identified, 
+    			 number_of_genes = length(genes_from_all_comparison_genes_identified))
+    
+    # need to be fixed
+    for (i in 1:number_ofedgePercentages)
+    {
+      start_idx <- (i - 1) * number_ofSignProportions + 1
+      end_idx <- i * number_ofSignProportions
+      subset_list <- lapply(comparison_list[start_idx:end_idx], function(x) x$common_genes_identified)
+      genes = Reduce(intersect, subset_list)
+      results_intersection_identified$same_edgePercentage_common[i] = 
+    	  list(genes = genes, number_of_genes = length(genes))
+    }
+    
+    
+    for (j in 1:number_ofSignProportions) {
+      jump_indices <- seq(from = j, to = number_ofTotalCase, by = number_ofSignProportions)
+      subset_list <- lapply(comparison_list[jump_indices], function(x) x$common_genes_identified)
+      genes <- Reduce(intersect, subset_list)
+      results_intersection_identified$same_signProportion_common[j]=
+    	  list(genes = genes, number_of_genes = length(genes))
+    }
+    
+    self$results_intersection_identified = results_intersection_identified
+    return(results_intersection_identified)
+    
+	
+    }
+	
+	)
+
+)
+
+```
+
+## perform comparison between frendship_like results of second and third dataset
+```{r}
+
+
+number_of_topGenes = 100
+friendshipLike_comparison_instance =
+  friendshipLike_comparison$new(geneAnalysis_secondDataset, geneAnalysis_thirdDataset,edge_percentage = c(0.05, 0.10))
+friendshipLike_comparison_instance$compute_comparison(number_of_topGenes = number_of_topGenes)
+
+
+```
+
+## Some information and visualizations about the comparison
+```{r}
+comparison_list_12 = friendshipLike_comparison_instance$comparison_list
+par(mfrow = c(1, 2))
+par(mar = c(4.1, 4.1, 3.1, 2.1))
+friendshipLike_comparison_instance$barplot_displayer()
+friendshipLike_comparison_instance$barplot_displayer(actualized_geneFraction = TRUE)
+par(mfrow = c(1, 1))
+
+comparison_list_12 <- lapply(comparison_list_12, function(item) {
+  # Calcoliamo i nuovi nomi partendo dal campo esistente
+  item$converted_geneNames <- convert_ensembl_to_names(item$common_genes_identified)
+  
+  # Restituiamo l'intera lista 'item' aggiornata
+  return(item)
+})
+
+gene_columns_list <- lapply(comparison_list_12, function(x) {
+  return(x$converted_geneNames$external_gene_name)
+})
+max_len <- max(sapply(gene_columns_list, length))
+padded_columns <- lapply(gene_columns_list, function(v) {
+  c(v, rep(NA, max_len - length(v)))
+})
+final_table <- as.data.frame(padded_columns)
+write.xlsx(final_table, 
+           file = "IntersectionStudy.xlsx", 
+           rowNames = FALSE, 
+           overwrite = TRUE)
+```
+
+
+
+
+
+# Network Randomization
+## Function to perform a single randomization
+```{r}
+
+# ============================================================================
+# SIGNED DEGREE-PRESERVING REWIRING ALGORITHM
+# Basato su Maslov-Sneppen (2002) adattato per reti signed
+# ============================================================================
+
+library(igraph)
+
+# ----------------------------------------------------------------------------
+# FUNZIONE PRINCIPALE: Signed Rewiring
+# ----------------------------------------------------------------------------
+signed_rewiring <- function(adj_matrix, n_iter = NULL, max_attempts = 100) {
+  #' Esegue il rewiring preservando i gradi positivi e negativi di ogni nodo
+  #' 
+  #' @param adj_matrix Matrice di adiacenza con valori {-1, 0, +1}
+  #' @param n_iter Numero di swap riusciti (default: 10 * numero_archi)
+  #' @param max_attempts Tentativi massimi per trovare uno swap valido
+  #' @return Lista con matrice rewired e statistiche
+  
+  # Copia della matrice per preservare l'originale
+  rewired_matrix <- adj_matrix
+  n_nodes <- nrow(adj_matrix)
+  
+  # Decomposizione in layer positivi e negativi
+  pos_edges <- which(adj_matrix > 0, arr.ind = TRUE)
+  neg_edges <- which(adj_matrix < 0, arr.ind = TRUE)
+  
+  # Rimuovi duplicati per reti non-dirette (mantieni solo triangolo superiore)
+  pos_edges <- pos_edges[pos_edges[,1] < pos_edges[,2], , drop = FALSE]
+  neg_edges <- neg_edges[neg_edges[,1] < neg_edges[,2], , drop = FALSE]
+  
+  n_pos_edges <- nrow(pos_edges)
+  n_neg_edges <- nrow(neg_edges)
+  
+  # Default: 10x il numero totale di archi (Maslov-Sneppen standard)
+  if (is.null(n_iter)) {
+    n_iter <- 10 * (n_pos_edges + n_neg_edges)
+  }
+  
+  cat(sprintf("Inizializzazione:\n"))
+  cat(sprintf("  - Archi positivi: %d\n", n_pos_edges))
+  cat(sprintf("  - Archi negativi: %d\n", n_neg_edges))
+  cat(sprintf("  - Iterazioni target: %d\n\n", n_iter))
+  
+  # Contatori
+  successful_swaps <- 0
+  attempts <- 0
+  collisions <- 0
+  
+  # -------------------------------------------------------------------------
+  # REWIRING LOOP
+  # -------------------------------------------------------------------------
+  while (successful_swaps < n_iter && attempts < n_iter * max_attempts) {
+    attempts <- attempts + 1
+    
+    # Scegli casualmente se operare su layer positivo o negativo
+    # Proporzione basata sulla densità relativa
+    if (runif(1) < n_pos_edges / (n_pos_edges + n_neg_edges)) {
+      # LAYER POSITIVO
+      if (n_pos_edges < 2) next  # Serve almeno 2 archi per lo swap
+      
+      # Seleziona due archi casuali: (u,v) e (x,y)
+      idx <- sample(1:n_pos_edges, 2, replace = FALSE)
+      edge1 <- pos_edges[idx[1], ]
+      edge2 <- pos_edges[idx[2], ]
+      
+      u <- edge1[1]; v <- edge1[2]
+      x <- edge2[1]; y <- edge2[2]
+      
+      # Verifica che i 4 nodi siano distinti
+      if (length(unique(c(u, v, x, y))) != 4) next
+      
+      # SWAP: (u,v) + (x,y) -> (u,y) + (x,v)
+      new_edge1 <- c(min(u,y), max(u,y))
+      new_edge2 <- c(min(x,v), max(x,v))
+      
+      # Verifica assenza di collisioni
+      # 1. Self-loops già esclusi (nodi distinti)
+      # 2. Archi già esistenti in layer positivo
+      if (rewired_matrix[new_edge1[1], new_edge1[2]] != 0 ||
+          rewired_matrix[new_edge2[1], new_edge2[2]] != 0) {
+        collisions <- collisions + 1
+        next
+      }
+      
+      # Esegui lo swap
+      rewired_matrix[u, v] <- rewired_matrix[v, u] <- 0
+      rewired_matrix[x, y] <- rewired_matrix[y, x] <- 0
+      rewired_matrix[new_edge1[1], new_edge1[2]] <- 1
+      rewired_matrix[new_edge1[2], new_edge1[1]] <- 1
+      rewired_matrix[new_edge2[1], new_edge2[2]] <- 1
+      rewired_matrix[new_edge2[2], new_edge2[1]] <- 1
+      
+      # Aggiorna lista archi positivi
+      pos_edges[idx[1], ] <- new_edge1
+      pos_edges[idx[2], ] <- new_edge2
+      
+    } else {
+      # LAYER NEGATIVO (logica identica)
+      if (n_neg_edges < 2) next
+      
+      idx <- sample(1:n_neg_edges, 2, replace = FALSE)
+      edge1 <- neg_edges[idx[1], ]
+      edge2 <- neg_edges[idx[2], ]
+      
+      u <- edge1[1]; v <- edge1[2]
+      x <- edge2[1]; y <- edge2[2]
+      
+      if (length(unique(c(u, v, x, y))) != 4) next
+      
+      new_edge1 <- c(min(u,y), max(u,y))
+      new_edge2 <- c(min(x,v), max(x,v))
+      
+      if (rewired_matrix[new_edge1[1], new_edge1[2]] != 0 ||
+          rewired_matrix[new_edge2[1], new_edge2[2]] != 0) {
+        collisions <- collisions + 1
+        next
+      }
+      
+      rewired_matrix[u, v] <- rewired_matrix[v, u] <- 0
+      rewired_matrix[x, y] <- rewired_matrix[y, x] <- 0
+      rewired_matrix[new_edge1[1], new_edge1[2]] <- -1
+      rewired_matrix[new_edge1[2], new_edge1[1]] <- -1
+      rewired_matrix[new_edge2[1], new_edge2[2]] <- -1
+      rewired_matrix[new_edge2[2], new_edge2[1]] <- -1
+      
+      neg_edges[idx[1], ] <- new_edge1
+      neg_edges[idx[2], ] <- new_edge2
+    }
+    
+    successful_swaps <- successful_swaps + 1
+    
+    # Progress report ogni 100000 swap
+    if (successful_swaps %% 100000 == 0) {
+      cat(sprintf("Swap riusciti: %d/%d (Collisioni: %d)\n", 
+                  successful_swaps, n_iter, collisions))
+    }
+  }
+  
+  cat(sprintf("\nRewiring completato:\n"))
+  cat(sprintf("  - Swap totali: %d\n", successful_swaps))
+  cat(sprintf("  - Tentativi: %d\n", attempts))
+  cat(sprintf("  - Collisioni: %d (%.1f%%)\n", 
+              collisions, 100 * collisions / attempts))
+  
+  return(list(
+    rewired_matrix = rewired_matrix,
+    stats = list(
+      successful_swaps = successful_swaps,
+      attempts = attempts,
+      collisions = collisions,
+      collision_rate = collisions / attempts
+    )
+  ))
+}
+
+```
+
+## Function for rewiring validation
+```{r}
+# ----------------------------------------------------------------------------
+# FUNZIONE DI VALIDAZIONE
+# ----------------------------------------------------------------------------
+validate_rewiring <- function(original_matrix, rewired_matrix) {
+  #' Verifica che il rewiring abbia preservato le proprietà locali
+  #' 
+  #' @param original_matrix Matrice originale
+  #' @param rewired_matrix Matrice dopo rewiring
+  #' @return Lista con risultati dei test
+  
+  cat("\n============================================\n")
+  cat("VALIDAZIONE SIGNED DEGREE PRESERVATION\n")
+  cat("============================================\n\n")
+  
+  n_nodes <- nrow(original_matrix)
+  
+  # -------------------------------------------------------------------------
+  # TEST 1: Preservazione dei gradi positivi
+  # -------------------------------------------------------------------------
+  original_pos_degree <- rowSums(original_matrix > 0)
+  rewired_pos_degree <- rowSums(rewired_matrix > 0)
+  
+  pos_degree_preserved <- all(original_pos_degree == rewired_pos_degree)
+  
+  cat("TEST 1: Preservazione grado positivo (k+)\n")
+  cat(sprintf("  Risultato: %s\n", 
+              ifelse(pos_degree_preserved, "✓ PASS", "✗ FAIL")))
+  if (!pos_degree_preserved) {
+    cat(sprintf("  Max differenza: %d\n", 
+                max(abs(original_pos_degree - rewired_pos_degree))))
+  }
+  
+  # -------------------------------------------------------------------------
+  # TEST 2: Preservazione dei gradi negativi
+  # -------------------------------------------------------------------------
+  original_neg_degree <- rowSums(original_matrix < 0)
+  rewired_neg_degree <- rowSums(rewired_matrix < 0)
+  
+  neg_degree_preserved <- all(original_neg_degree == rewired_neg_degree)
+  
+  cat("\nTEST 2: Preservazione grado negativo (k-)\n")
+  cat(sprintf("  Risultato: %s\n", 
+              ifelse(neg_degree_preserved, "✓ PASS", "✗ FAIL")))
+  if (!neg_degree_preserved) {
+    cat(sprintf("  Max differenza: %d\n", 
+                max(abs(original_neg_degree - rewired_neg_degree))))
+  }
+  
+  # -------------------------------------------------------------------------
+  # TEST 3: Cambio topologico (Edge Overlap)
+  # -------------------------------------------------------------------------
+  pos_overlap <- sum((original_matrix > 0) & (rewired_matrix > 0))
+  neg_overlap <- sum((original_matrix < 0) & (rewired_matrix < 0))
+  
+  total_pos_edges <- sum(original_matrix > 0) / 2  # Diviso 2 per simmetria
+  total_neg_edges <- sum(original_matrix < 0) / 2
+  
+  pos_overlap_pct <- 100 * pos_overlap / (2 * total_pos_edges)
+  neg_overlap_pct <- 100 * neg_overlap / (2 * total_neg_edges)
+  
+  cat("\nTEST 3: Cambio topologico\n")
+  cat(sprintf("  Edge overlap positivi: %.1f%%\n", pos_overlap_pct))
+  cat(sprintf("  Edge overlap negativi: %.1f%%\n", neg_overlap_pct))
+  cat(sprintf("  Interpretazione: %.1f%% della topologia è cambiata\n",
+              100 - (pos_overlap_pct + neg_overlap_pct) / 2))
+  
+  # -------------------------------------------------------------------------
+  # TEST 4: Conservazione della densità
+  # -------------------------------------------------------------------------
+  original_density <- (sum(original_matrix != 0) / 2) / (n_nodes * (n_nodes - 1) / 2)
+  rewired_density <- (sum(rewired_matrix != 0) / 2) / (n_nodes * (n_nodes - 1) / 2)
+  
+  cat("\nTEST 4: Densità della rete\n")
+  cat(sprintf("  Originale: %.4f\n", original_density))
+  cat(sprintf("  Rewired:   %.4f\n", rewired_density))
+  cat(sprintf("  Differenza: %.6f\n", abs(original_density - rewired_density)))
+  
+  # -------------------------------------------------------------------------
+  # TEST 5: Distribuzione dei gradi (Kolmogorov-Smirnov)
+  # -------------------------------------------------------------------------
+  ks_pos <- ks.test(original_pos_degree, rewired_pos_degree)
+  ks_neg <- ks.test(original_neg_degree, rewired_neg_degree)
+  
+  cat("\nTEST 5: Distribuzione dei gradi (KS test)\n")
+  cat(sprintf("  k+ distribution: D=%.4f, p=%.4f\n", 
+              ks_pos$statistic, ks_pos$p.value))
+  cat(sprintf("  k- distribution: D=%.4f, p=%.4f\n", 
+              ks_neg$statistic, ks_neg$p.value))
+  
+  # -------------------------------------------------------------------------
+  # SUMMARY
+  # -------------------------------------------------------------------------
+  all_tests_passed <- pos_degree_preserved && neg_degree_preserved
+  
+  cat("\n============================================\n")
+  cat(sprintf("VALIDAZIONE: %s\n", 
+              ifelse(all_tests_passed, "✓ SUCCESSO", "✗ FALLITO")))
+  cat("============================================\n\n")
+  
+  return(list(
+    pos_degree_preserved = pos_degree_preserved,
+    neg_degree_preserved = neg_degree_preserved,
+    edge_overlap_pos = pos_overlap_pct,
+    edge_overlap_neg = neg_overlap_pct,
+    topology_changed = 100 - (pos_overlap_pct + neg_overlap_pct) / 2,
+    ks_test_pos = ks_pos,
+    ks_test_neg = ks_neg,
+    all_passed = all_tests_passed
+  ))
+}
+
+
+```
+
+## Function to compute multiple Randomizations
+```{r}
+
+multipleGraphRandomization_computing = function(adjacencyMatrix_toRandomize, 
+                                                mainFolder, fileSpecification, number_ofRandomizations = 100, save = TRUE,
+                                                compute_localBalanceIndex_rewired = TRUE)
+{
+  list_of_networkRandomized = list()
+  random_seed = sample(1:number_ofRandomizations, size = number_ofRandomizations, replace = FALSE)
+  for (i in 1:number_ofRandomizations)
+  {
+    set.seed(random_seed[i])
+    result = signed_rewiring(adjacencyMatrix_toRandomize)
+    # validation = validate_rewiring(friendship_like_adjacencyMatrix_toRandomize, result$rewired_matrix)
+    rewired_network = result$rewired_matrix
+    
+    if(compute_localBalanceIndex_rewired){
+      local_balance_index_rewired = network_toRandomize$localBalanceIndex_computation(rewired_network)
+    }else{local_balance_index_rewired = NULL}
+    
+    list_of_networkRandomized[[i]] = 
+      list(rewired_network = rewired_network, local_balance_index_rewired = local_balance_index_rewired)  
+  }
+  
+  return(list_of_networkRandomized)
+  if (save)
+  {
+    fileName = paste0(mainFolder, fileSpecification)
+    saveRDS(list_of_networkRandomized, file = fileName)
+  }
+
+}
+```
+
+## Function to compute multiple Randomizations 2
+```{r}
+
+library(parallel)
+
+multipleGraphRandomization_computing_2 = function(adjacencyMatrix_toRandomize,mainFolder, fileSpecification, number_ofRandomizations = 100, save = TRUE)
+{
+  # 1. Prepariamo i seed per garantire la riproducibilità
+  random_seeds = sample(1:number_ofRandomizations, size = number_ofRandomizations, replace = FALSE)
+  
+  # 2. Creiamo il nostro gruppo di lavoratori (Cluster)
+  numero_core = detectCores() - 2
+  file_log = "log_lavoratori_rewiring.txt"
+  
+  cl = makeCluster(numero_core, outfile = file_log)  
+  on.exit(stopCluster(cl))
+  
+  clusterEvalQ(cl, {
+    library(igraph)
+    library(R6)
+    library(signnet)
+    library(expm)
+    library(openxlsx)
+    library(Matrix)
+  })
+  
+  # 3. FONDAMENTALE: Istruiamo i lavoratori!
+  # I core paralleli nascono "vuoti". Dobbiamo esportare al loro interno le 
+  # variabili e le funzioni esterne che gli serviranno per lavorare.
+  # NOTA: Se 'signed_rewiring' usa altre librerie (es. igraph), andranno caricate nei core.
+  clusterExport(cl, varlist = c("adjacencyMatrix_toRandomize", 
+                                "signed_rewiring", 
+                                "random_seeds"), 
+                envir = environment())
+  
+  # 4. Eseguiamo il ciclo in parallelo con parLapply!
+  # parLapply restituirà automaticamente una lista con tutti i risultati
+  list_of_networkRandomized = parLapply(cl, 1:number_ofRandomizations, function(i) {
+    
+    cat(sprintf("\n[Lavoratore Info] Inizio randomizzazione %d di %d...\n", i, length(random_seeds)))
+    
+    risultato_sicuro = tryCatch({
+      
+      set.seed(random_seeds[i])
+      
+      # PER ESTREMA SICUREZZA: Forziamo la matrice a essere una matrice R standard
+      # prima di darla in pasto alla funzione di rewiring.
+      matrice_base = as.matrix(adjacencyMatrix_toRandomize)
+      
+      result = signed_rewiring(matrice_base)
+      rewired_network = result$rewired_matrix
+      
+      cat(sprintf("[Lavoratore Info] Randomizzazione %d COMPLETATA con successo!\n", i))
+      
+      return(list(rewired_network = rewired_network, local_balance_index_rewired = NULL))
+      
+    }, error = function(condizione_di_errore) {
+      cat(sprintf("\n[ERRORE GRAVE] La randomizzazione %d è fallita. Motivo: %s\n", i, condizione_di_errore$message))
+      return(NULL) 
+    })
+    
+    return(risultato_sicuro)
+  })
+  
+  if (save) {
+    fileName = paste0(mainFolder, fileSpecification)
+    saveRDS(list_of_networkRandomized, file = fileName)
+  }
+  
+  return(list_of_networkRandomized)
+}
+```
+
+
+## Randomization keeping 10% of edges (generalized to more than one dataset)
+```{r}
+library(igraph)
+chosenDataset = "2"
+upper_threshold_toTest = switch(
+	EXPR = chosenDataset, 
+	"2" = upper_threshold_matrix_secondDataset[, 2],
+	"3" = upper_threshold_matrix_thirdDataset[, 2]
+)
+lower_threshold_toTest = switch(
+	EXPR = chosenDataset,
+	"2" = lower_threshold_matrix_secondDataset[, 2],
+	"3" = lower_threshold_matrix_thirdDataset[, 2]
+)
+
+sign_proportions_specifier = c(95, 90, 85, 80)
+number_ofRandomizations = 10
+local_balance_index_initialGraphs = list()
+list_of_randomizations = list()
+fileSpecification0 = paste0("10percentEdgeKeeped_", sign_proportions_specifier,
+                            "-", (100 - sign_proportions_specifier), "signProportion")
+fileSpecification <- paste0("/completeRandomization_10percentEdgeKeeped_", sign_proportions_specifier,
+                            "-", (100 - sign_proportions_specifier), "signProportion")
+
+dataset_and_comparisonPerformed_specifier =
+	switch(
+		EXPR = chosenDataset,
+		"2" = "trainGSE156902/GBM_vs_asymptomaticControls",
+		"3" = "trainGSE183635/Glioma_vs_Asymptomatic Controls"
+	)
+mainFolder = paste0(baseFolder, "FixedWorkflow/", dataset_and_comparisonPerformed_specifier,
+	"/new_filtration_on_graph")
+
+for (it_on_sign_proportions in 1:length(sign_proportions_specifier))
+{
+	if (chosenDataset == "2"){network_toRandomize = geneAnalysis_secondDataset$clone()}
+  if (chosenDataset == "3"){network_toRandomize = geneAnalysis_thirdDataset$clone()}
+  print(upper_threshold_toTest[it_on_sign_proportions])
+  print(lower_threshold_toTest[it_on_sign_proportions])
+  network_toRandomize$coexpressions_and_differentialCoexpressions_computation(
+    expressions_type = "expressions", 
+    upper_threshold = upper_threshold_toTest[it_on_sign_proportions] , lower_threshold = lower_threshold_toTest[it_on_sign_proportions] )
+  friendship_like_adjacencyMatrix_toRandomize = network_toRandomize$friendshipLike_adjacencyMatrix
+  print(fileSpecification[it_on_sign_proportions],)
+  # a = network_toRandomize$trainSet_making(mainFolder, 
+  #                                         supplementary_subfolder_specification =
+  #                                           fileSpecification0[it_on_sign_proportions], save = FALSE)  
+  local_balance_index_initialGraphs[[it_on_sign_proportions]] = 
+    network_toRandomize$localBalanceIndex_computation()
+  # list_of_randomizations[[it_on_sign_proportions]] = 
+  #   multipleGraphRandomization_computing(
+  #     adjacencyMatrix_toRandomize = friendship_like_adjacencyMatrix_toRandomize,
+  #     mainFolder = mainFolder, fileSpecification = fileSpecification[it_on_sign_proportions], number_ofRandomizations = number_ofRandomizations, save = FALSE)
+    list_of_randomizations[[it_on_sign_proportions]] = 
+    multipleGraphRandomization_computing_2(
+      adjacencyMatrix_toRandomize = friendship_like_adjacencyMatrix_toRandomize,
+      mainFolder = mainFolder, 
+      fileSpecification = fileSpecification[it_on_sign_proportions], 
+      number_ofRandomizations = number_ofRandomizations, 
+      save = FALSE)      
+      
+}
+
+# # Prendiamo la primissima matrice randomizzata per fare un test
+# matrice_test <- list_of_randomizations[[1]][[1]]$rewired_network
+# 
+# # Contiamo quanti 1 e -1 ci sono nell'intera matrice!
+# numero_positivi <- sum(matrice_test > 0, na.rm = TRUE)
+# numero_negativi <- sum(matrice_test < 0, na.rm = TRUE)
+# 
+# cat("Archi positivi dopo il rewiring:", numero_positivi, "\n")
+# cat("Archi negativi dopo il rewiring:", numero_negativi, "\n")
+# cat("Valori NON nulli sulla diagonale:", sum(diag(matrice_test) != 0), "\n")
+# 
+# # Estraiamo la matrice grezza prima di passarla al rewiring
+# matrice_indagine <- as.matrix(friendship_like_adjacencyMatrix_toRandomize)
+# 
+# cat("\n--- IDENTIKIT DELLA MATRICE ORIGINALE ---\n")
+# cat("1. Quanti nodi (righe) ha la rete?:", nrow(matrice_indagine), "\n")
+# cat("2. Valori NON nulli sulla diagonale originale:", sum(diag(matrice_indagine) != 0), "\n")
+# cat("3. La matrice è PERFETTAMENTE simmetrica?:", isSymmetric(matrice_indagine), "\n")
+# 
+# # Contiamo gli archi totali originari per confrontarli
+# positivi_originari <- sum(matrice_indagine > 0, na.rm = TRUE)
+# negativi_originari <- sum(matrice_indagine < 0, na.rm = TRUE)
+# cat("4. Archi positivi totali originari:", positivi_originari, "\n")
+# cat("5. Archi negativi totali originari:", negativi_originari, "\n")
+
+
+for (i in 1:length(list_of_randomizations)) {
+  
+  # Utilizziamo un secondo ciclo per gli N elementi interni
+  for (j in 1:length(list_of_randomizations[[i]])) {
+    
+    # 1. Accediamo alla matrice corrente
+    # Usiamo una variabile temporanea per comodità (è una copia)
+    current_matrix <- list_of_randomizations[[i]][[j]]$rewired_network
+    
+    # 2. Mettiamo a zero la diagonale principale
+    diag(current_matrix) <- 0
+    
+    # 3. Aggiorniamo la matrice nella lista originale con la diagonale pulita
+    list_of_randomizations[[i]][[j]]$rewired_network <- current_matrix
+    
+    # 4. Calcoliamo il Local Balance Index
+    # Passiamo la matrice appena pulita alla funzione del tuo oggetto
+    list_of_randomizations[[i]][[j]]$local_balance_index <- 
+      network_toRandomize$localBalanceIndex_computation(
+        friendshipLike_adjacencyMatrix = current_matrix
+      )
+  }
+}
+
+
+saveRDS(list_of_randomizations, file = paste0(mainFolder, "/list_of_randomizations_10percentEdgeKeeped"))
+
+
+
+
+```
+
+```{r}
+library(igraph)
+chosenDataset = "2"
+upper_threshold_toTest = switch(
+	EXPR = chosenDataset, 
+	"2" = upper_threshold_matrix_secondDataset[, 1],
+	"3" = upper_threshold_matrix_thirdDataset[, 1]
+)
+lower_threshold_toTest = switch(
+	EXPR = chosenDataset,
+	"2" = lower_threshold_matrix_secondDataset[, 1],
+	"3" = lower_threshold_matrix_thirdDataset[, 1]
+)
+
+sign_proportions_specifier = c(95, 90, 85, 80)
+number_ofRandomizations = 100
+local_balance_index_initialGraphs = list()
+list_of_randomizations = list()
+fileSpecification0 = paste0("5percentEdgeKeeped_", sign_proportions_specifier,
+                            "-", (100 - sign_proportions_specifier), "signProportion")
+fileSpecification <- paste0("/completeRandomization_5percentEdgeKeeped_", sign_proportions_specifier,
+                            "-", (100 - sign_proportions_specifier), "signProportion")
+
+dataset_and_comparisonPerformed_specifier =
+	switch(
+		EXPR = chosenDataset,
+		"2" = "trainGSE156902/GBM_vs_asymptomaticControls",
+		"3" = "trainGSE183635/Glioma_vs_Asymptomatic Controls"
+	)
+mainFolder = paste0(baseFolder, "FixedWorkflow/", dataset_and_comparisonPerformed_specifier,
+	"/new_filtration_on_graph")
+
+for (it_on_sign_proportions in 1:length(sign_proportions_specifier))
+{
+	if (chosenDataset == "2"){network_toRandomize = geneAnalysis_secondDataset$clone()}
+  if (chosenDataset == "3"){network_toRandomize = geneAnalysis_thirdDataset$clone()}
+  print(upper_threshold_toTest[it_on_sign_proportions])
+  print(lower_threshold_toTest[it_on_sign_proportions])
+  network_toRandomize$coexpressions_and_differentialCoexpressions_computation(
+    expressions_type = "expressions", 
+    upper_threshold = upper_threshold_toTest[it_on_sign_proportions] , lower_threshold = lower_threshold_toTest[it_on_sign_proportions] )
+  friendship_like_adjacencyMatrix_toRandomize = network_toRandomize$friendshipLike_adjacencyMatrix
+  print(fileSpecification[it_on_sign_proportions],)
+  # a = network_toRandomize$trainSet_making(mainFolder, 
+  #                                         supplementary_subfolder_specification =
+  #                                           fileSpecification0[it_on_sign_proportions], save = FALSE)  
+  local_balance_index_initialGraphs[[it_on_sign_proportions]] = 
+    network_toRandomize$localBalanceIndex_computation()
+  # list_of_randomizations[[it_on_sign_proportions]] =
+  #   multipleGraphRandomization_computing(
+  #     adjacencyMatrix_toRandomize = friendship_like_adjacencyMatrix_toRandomize,
+  #     mainFolder = mainFolder, fileSpecification = fileSpecification[it_on_sign_proportions], number_ofRandomizations = number_ofRandomizations, save = FALSE)
+  list_of_randomizations[[it_on_sign_proportions]] = multipleGraphRandomization_computing_2(adjacencyMatrix_toRandomize = friendship_like_adjacencyMatrix_toRandomize,
+                                                                                            mainFolder = mainFolder, fileSpecification = fileSpecification[it_on_sign_proportions], 
+                                                                                            number_ofRandomizations = number_ofRandomizations, save = FALSE)
+
+}
+
+saveRDS(list_of_randomizations, file = paste0(mainFolder, "/list_of_randomizations_5percentEdgeKeeped"))
+
+
+
+
+```
+
+# Validation
+
+## Some functions 
+```{r}
+pvaluesShapiroWilk_test <- sapply(reorganized_list, function(vettore) {
+  
+  # 1. Eseguiamo il test sul singolo vettore
+  test <- shapiro.test(vettore)
+  
+  # 2. Estraiamo e restituiamo solo il p-value (il numero che ci interessa)
+  return(test$p.value)
+})
+
+# 3. Creiamo una funzione che applichi la tua esatta formula per ogni nome
+empirical_pvalues_computation <- function(geneName) {
+  
+  # Estraiamo local_balance_index_observed per questo specifico nodo
+  local_balance_index_observed <- local_balance_index[geneName]
+  
+  # Estraiamo il vettore degli local_balance_index_randomicInstance (i valori delle N simulazioni) per questo nodo
+  local_balance_index_randomicInstance <- matrice_rewired[geneName, ]
+  
+  # Implementiamo la formula: I(local_balance_index_randomicInstance <= local_balance_index_observed)
+  # In R, (local_balance_index_randomicInstance <= local_balance_index_observed) genera un vettore di TRUE/FALSE.
+  # La funzione sum() trasforma automaticamente i TRUE in 1 e i FALSE in 0!
+  lessThan_or_equal_counts <- sum(local_balance_index_randomicInstance <= local_balance_index_observed, na.rm = TRUE)
+  
+  # Calcolo finale del p-value (p_i)
+  p_i <- (1 + lessThan_or_equal_counts) / (1 + N)
+  
+  return(p_i)
+}
+
+robust_z_computation <- function(obs, rand_matrix) {
+  # Calcolo mediana e MAD per riga (ogni riga è un gene)
+  row_medians <- apply(rand_matrix, 1, median)
+  row_mads <- apply(rand_matrix, 1, mad) + 0.01 # mad() in R include già la costante 1.4826 di default
+  
+  # Calcolo Z-score robusto
+  # Nota: se MAD è 0 (distribuzione troppo concentrata), lo Z diventa infinito o NaN.
+  z_scores <- (obs - row_medians) / row_mads
+  
+  return(z_scores)
+}
+
+convert_ensembl_to_names <- function(ensembl_ids) {
+  # Connessione a Ensembl
+  ensembl <- useEnsembl(biomart = "genes", dataset = "hsapiens_gene_ensembl")
+
+  # Filtra gli ID non validi
+  valid_ensembl_ids <- ensembl_ids[!is.na(ensembl_ids) & ensembl_ids != ""]
+
+  if (length(valid_ensembl_ids) == 0) {
+    message("Nessun ID Ensembl valido fornito.")
+    return(data.frame())
+  }
+
+  # Mappatura degli ID
+  genes <- tryCatch(
+    {
+      getBM(
+        attributes = c(
+          "ensembl_gene_id",
+          "external_gene_name",
+          "entrezgene_id"
+        ),
+        filters = "ensembl_gene_id",
+        values = valid_ensembl_ids,
+        mart = ensembl
+      )
+    },
+    error = function(e) {
+      message("Errore durante la conversione degli ID Ensembl: ", e$message)
+      return(data.frame())
+    }
+  )
+
+  return(genes)
+}
+
+
+
+```
+
+## Subplot Generator
+```{r}
+rm(list_of_randomizations)
+
+fileName = paste0(baseFolder, 
+                  "FixedWorkflow/trainGSE183635/Glioma_vs_Asymptomatic Controls/new_filtration_on_graph")
+chosen_percentage = "5" 
+fileName = 
+	switch(
+		EXPR = chosen_percentage,
+		"5" = paste0(fileName, "/list_of_randomizations_5percentEdgeKeeped"),
+		"10" = paste0(fileName, "/list_of_randomizations_10percentEdgeKeeped"),
+		"20" = paste0(fileName, "/list_of_randomizations_20percentEdgeKeeped")
+	)
+list_of_randomizations = readRDS(fileName)
+
+	
+upper_threshold_toTest = 
+  switch(
+    EXPR = chosen_percentage,
+    "5" = c(4.874205, 4.446284, 4.210824, 4.041592), 
+    "10" =  c(4.358356, 3.956800, 3.714723, 3.541415),
+    "20" =  c(4.041592, 3.603861, 3.329947, 3.139381),
+  )
+
+lower_threshold_toTest = 
+  switch(
+    EXPR = chosen_percentage,
+    "5" = c(0.085576, 0.081060, 0.076284, 0.071309), 
+    "10" =  c(0.183439, 0.173611, 0.163887, 0.154448),
+    "20" =  c(0.354658, 0.334811, 0.315913, 0.297164),    
+  )
+
+```
+
+```{r}
+
+sign_proportions_specifier = c(95, 90, 85, 80)
+list_of_statisticalEvaluation_onLBIStudy = vector("list", 4)
+elaborateGeneLists = TRUE
+saveGenes = FALSE
+gene_from_qValues = TRUE
+gene_from_robustz = FALSE
+
+for (singProportionIdentifier in 1:4)
+{
+	network_toRandomize = geneAnalysis_thirdDataset$clone()
+	network_toRandomize$coexpressions_and_differentialCoexpressions_computation(
+	  expressions_type = "expressions", 
+	  upper_threshold = upper_threshold_toTest[singProportionIdentifier], 
+	  lower_threshold = lower_threshold_toTest[singProportionIdentifier] )
+	local_balance_index = network_toRandomize$localBalanceIndex_computation(type = "TriangleBased")
+	local_balance_index = 
+		  local_balance_index[names(local_balance_index) %in%
+		                        names(list_of_randomizations[[singProportionIdentifier]][[singProportionIdentifier]]$local_balance_index_rewired)]
+		local_balance_index = sort(local_balance_index)
+		
+		list_of_networkRandomized = list_of_randomizations[[singProportionIdentifier]]
+		
+		matrix_data <- sapply(list_of_networkRandomized, function(x) {
+		  return(x$local_balance_index_rewired)
+		})
+		reorganized_list <- split(matrix_data, row(matrix_data))
+	  resultShapiroWilk_test <- ifelse(pvaluesShapiroWilk_test > 0.05, 1, 0)
+	  list_of_statisticalEvaluation_onLBIStudy[[singProportionIdentifier]]$resultShapiroWilk_first100 = resultShapiroWilk_test[1:100]
+	  
+	  N <- length(list_of_networkRandomized)
+		matrice_rewired <- 
+			sapply(list_of_networkRandomized, function(elemento_lista) {
+				elemento_lista$local_balance_index_rewired})
+		nomi_osservati <- names(local_balance_index)
+		p_values_raw <- sapply(nomi_osservati, empirical_pvalues_computation)
+		list_of_statisticalEvaluation_onLBIStudy[[singProportionIdentifier]]$p_values_raw = p_values_raw[1:100]
+		p_values_adjusted <- p.adjust(p_values_raw[1:100], method = "BH")
+		p_values_adjusted_test = ifelse(p_values_adjusted < 0.05, 1, 0)
+		list_of_statisticalEvaluation_onLBIStudy[[singProportionIdentifier]]$p_values_adjusted = p_values_adjusted
+	  
+	  desired_order <- names(local_balance_index)
+		matrice_rewired <- matrice_rewired[desired_order, ]
+		# identical(rownames(matrice_rewired), names(local_balance_index))
+		
+		plotTitle = paste0(chosen_percentage, "% edge keeped ", 
+                   as.character(sign_proportions_specifier[singProportionIdentifier]), "-",
+                   as.character(100-sign_proportions_specifier[singProportionIdentifier]),
+                   " sign proportion")
+		
+		robust_z = robust_z_computation(local_balance_index, matrice_rewired)
+		list_of_statisticalEvaluation_onLBIStudy[[singProportionIdentifier]]$robust_z = robust_z
+	  list_of_statisticalEvaluation_onLBIStudy[[singProportionIdentifier]]$plotTitle = plotTitle
+	  
+	  if (elaborateGeneLists)
+	  {
+	    if (gene_from_qValues)
+	    {
+        genes_underThreshold_first100 = which(p_values_adjusted_test != 0)
+        geneSelected_3 <- names(genes_underThreshold_first100)	      
+	    }
+	    if(gene_from_robustz)
+	    {
+        robust_z_testResult_2 = ifelse(robust_z <= -1.96, 1, 0)
+        robust_z_testResult_2_first100 = robust_z_testResult_2[1:100]
+    	  genes_underThreshold_first100 = which(robust_z_testResult_2_first100 != 0)
+        geneSelected_3 <- names(genes_underThreshold_first100)	      
+	    }
+      
+      geneName_converted_3 = convert_ensembl_to_names(geneSelected_3)
+      correctOrder_3 <- match(geneSelected_3, geneName_converted_3$ensembl_gene_id)
+      geneName_converted_3 <- geneName_converted_3[correctOrder_3, ]
+      if (any(is.na(correctOrder_3))) {
+        warning("Attenzione: alcuni geni nel vettore non sono stati trovati nel dataframe!")
+      }
+      
+      
+      list_of_statisticalEvaluation_onLBIStudy[[singProportionIdentifier]]$geneName_allIndexExclusive_first100 = geneName_converted_3
+
+      
+  	  if (saveGenes)
+  	  {
+    	  # robust_z_testResult = ifelse(robust_z >= 1.96 | robust_z <= -1.96, 1, 0)
+        # sum(robust_z_testResult)
+  
+        
+        fileTitle_3 = paste0("/", chosen_percentage, "perc_", 
+                           as.character(sign_proportions_specifier[singProportionIdentifier]), "-",
+                           as.character(100-sign_proportions_specifier[singProportionIdentifier]),
+                           "_under2_InFirst100.xlsx")
+        write.xlsx(geneName_converted_3, file = paste0(mainFolder, fileTitle_3))	    
+          
+  	    
+  	  }      
+	  }
+	  
+
+
+    
+
+}
+
+
+
+
+```
+
+```{r}
+
+loadData = TRUE
+if(loadData)
+{
+  chosen_percentage = "10"
+
+  list_of_statisticalEvaluation_onLBIStudy =
+    readRDS(paste0(mainFolder,"/list_of_statisticalEvaluation_onLBIStudy_", chosen_percentage,  "%"))
+}
+
+
+
+# 1. Prepariamo la griglia 2x2
+par(mfrow = c(2, 2))
+# mar = c(bottom, left, top, right)
+par(mar = c(4.1, 4.1, 3.1, 2.1))
+
+
+# 2. Iteriamo attraverso i 4 elementi della lista
+for (i in 1:4) {
+  
+  # Estraiamo i dati correnti per chiarezza
+  dati_correnti <- list_of_statisticalEvaluation_onLBIStudy[[i]]$robust_z
+  titolo_corrente <- list_of_statisticalEvaluation_onLBIStudy[[i]]$plotTitle
+  
+  # Creiamo il plot seguendo le tue specifiche
+  plot(dati_correnti, 
+       xlab = "Genes", 
+       ylab = "scores", 
+       main = titolo_corrente, 
+       ylim = c(-45, 5))
+  
+  # Aggiungiamo la linea orizzontale rossa
+  abline(h = -2, col = "red", lwd = 2, lty = 2)
+}
+
+# 3. Ripristiniamo la visualizzazione singola
+par(mfrow = c(1, 1))
+
+
+# 1. Prepariamo la griglia 2x2
+par(mfrow = c(2, 2))
+# mar = c(bottom, left, top, right)
+par(mar = c(4.1, 4.1, 3.1, 2.1))
+
+
+# 2. Iteriamo attraverso i 4 elementi della lista
+for (i in 1:4) {
+  
+  # Estraiamo i dati correnti per chiarezza
+  dati_correnti <- list_of_statisticalEvaluation_onLBIStudy[[i]]$robust_z[1:100]
+  titolo_corrente <- list_of_statisticalEvaluation_onLBIStudy[[i]]$plotTitle
+  
+  # Creiamo il plot seguendo le tue specifiche
+  plot(dati_correnti, 
+       xlab = "Genes", 
+       ylab = "scores", 
+       main = titolo_corrente, 
+       ylim = c(-45, 5))
+  
+  # Aggiungiamo la linea orizzontale rossa
+  abline(h = -2, col = "red", lwd = 2, lty = 2)
+}
+
+# 3. Ripristiniamo la visualizzazione singola
+par(mfrow = c(1, 1))
+
+#########################################
+
+#1. Prepariamo la griglia 2x2
+par(mfrow = c(2, 2))
+# mar = c(bottom, left, top, right)
+par(mar = c(4.1, 4.1, 3.1, 2.1))
+
+new_titles = paste0(chosen_percentage, "% edges; ",
+                    sign_proportions_specifier, ":", 100 - sign_proportions_specifier, 
+                    " sign proportion") 
+
+# 2. Iteriamo attraverso i 4 elementi della lista
+for (i in 1:4) {
+  
+  # Estraiamo i dati correnti per chiarezza
+  dati_correnti <- list_of_statisticalEvaluation_onLBIStudy[[i]]$p_values_adjusted
+  titolo_corrente <- list_of_statisticalEvaluation_onLBIStudy[[i]]$plotTitle
+  titolo_corrente = new_titles[i]
+  
+  
+  # Creiamo il plot seguendo le tue specifiche
+  plot(dati_correnti,
+       log = "y",
+       xlab = "Genes", 
+       ylab = "q-value",
+       pch = 19,
+       col = "black",
+       main = titolo_corrente,  
+       ylim = c(0.001, 1))
+  
+  # # Aggiungiamo la linea orizzontale rossa
+  abline(h = 0.05, col = "red", lwd = 3, lty = 2)
+  abline(h = 10^(-3:0), col = "lightgray", lty = "solid")
+
+  # Se vuoi le linee per i multipli (2, 3, 4...) tra una decade e l'altra:
+  minor_ticks <- rep(1:9, 5) * 10^rep(-3:-1, each = 9)
+  abline(h = minor_ticks, col = "lightgray", lwd = 0.1, lty = "solid")
+}
+
+
+
+# Creiamo una lista per memorizzare i 4 oggetti grafici
+plot_list <- list()
+
+for (i in 1:4) {
+  
+  # 1. Preparazione dati (come nel tuo codice)
+  dati_correnti <- data.frame(
+    ShapiroWilk = list_of_statisticalEvaluation_onLBIStudy[[i]]$resultShapiroWilk_first100,
+    pValues = list_of_statisticalEvaluation_onLBIStudy[[i]]$p_values_raw < 0.05,
+    qValues = list_of_statisticalEvaluation_onLBIStudy[[i]]$p_values_adjusted < 0.05,
+    robustZ = (list_of_statisticalEvaluation_onLBIStudy[[i]]$robust_z < -2)[1:100]
+  )
+  
+  # 2. Trasposizione per lo sviluppo ORIZZONTALE
+  # t() trasforma il DF 100x3 in una Matrice 3x100
+  matrice_plot <- t(as.matrix(dati_correnti) * 1)
+  
+  titolo_corrente <- list_of_statisticalEvaluation_onLBIStudy[[i]]$plotTitle
+  
+  # 3. Creazione del plot (senza visualizzarlo subito)
+  # Usiamo silent = TRUE per non stampare singolarmente e salviamo il gtable
+  p <- pheatmap(matrice_plot, 
+                cluster_rows = FALSE,      
+                cluster_cols = FALSE,      
+                color = c("black", "white"), 
+                border_color = "grey60",   
+                legend = FALSE,            
+                fontsize_row = 8,          # Leggermente più grande per le 3 righe
+                fontsize_col = 1,         
+                main = titolo_corrente,
+                cellwidth = 5,             # Ridotta per far stare 100 geni in orizzontale
+                cellheight = 15,           
+                silent = TRUE              # Fondamentale per grid.arrange
+  )
+  
+  # Salviamo l'oggetto grafico nella nostra lista
+  plot_list[[i]] <- p$gtable
+}
+
+# 4. Visualizziamo i 4 subplot in una colonna (4 righe, 1 colonna)
+grid.arrange(grobs = plot_list, ncol = 1)
+
+# 1. Prepariamo la griglia 2x2
+par(mfrow = c(2, 2))
+# mar = c(bottom, left, top, right)
+par(mar = c(4.1, 4.1, 3.1, 2.1))
+
+
+# 2. Iteriamo attraverso i 4 elementi della lista
+for (i in 1:4) {
+  
+  # Estraiamo i dati correnti per chiarezza
+  dati_correnti <- list_of_statisticalEvaluation_onLBIStudy[[i]]$robust_z
+  titolo_corrente <- list_of_statisticalEvaluation_onLBIStudy[[i]]$plotTitle
+  
+  # Creiamo il plot seguendo le tue specifiche
+  hist(dati_correnti, 
+       xlab = "Genes", 
+       ylab = "scores", 
+       main = titolo_corrente, 
+       )
+  
+
+}
+
+# 3. Ripristiniamo la visualizzazione singola
+par(mfrow = c(1, 1))
+
+
+```
+
+### Other Graphs
+```{r, dpi=100, fig.width=5, fig.height=4, out.width="100%"}
+chosen_percentage = "5"
+list_of_statisticalEvaluation_onLBIStudy_5 = readRDS(paste0(mainFolder, 
+                   "/list_of_statisticalEvaluation_onLBIStudy_", 
+                   chosen_percentage,  "%"))
+
+chosen_percentage = "10"
+list_of_statisticalEvaluation_onLBIStudy_10 = readRDS(paste0(mainFolder, 
+                   "/list_of_statisticalEvaluation_onLBIStudy_", 
+                   chosen_percentage,  "%"))
+
+# Combine the two main study lists into one single object containing 8 elements
+combined_study_list <- c(list_of_statisticalEvaluation_onLBIStudy_5, 
+                         list_of_statisticalEvaluation_onLBIStudy_10)
+
+# Extract the 'external_gene_name' vector from the nested structure of each element
+list_of_genes <- lapply(combined_study_list, function(element) {
+  return(element$geneName_allIndexExclusive_first100$external_gene_name)
+})
+
+# Assign descriptive names to the list elements for better heatmap labeling
+# (Assuming 4 elements for 5% and 4 elements for 10% study)
+names(list_of_genes) <- c(paste0("5% ", sign_proportions_specifier, "(+)"), 
+                          paste0("10% ", sign_proportions_specifier, "(+)"))
+
+# Initialize an empty 8x8 matrix with zeros
+num_elements <- length(list_of_genes)
+common_gene_matrix <- matrix(0, nrow = num_elements, ncol = num_elements)
+common_gene_matrix_normalized = matrix(0, nrow = num_elements, ncol = num_elements)
+
+# Set row and column names for the matrix based on the list names
+rownames(common_gene_matrix) <- names(list_of_genes)
+colnames(common_gene_matrix) <- names(list_of_genes)
+
+# Fill the matrix by calculating the size of the intersection for each pair
+for (i in 1:num_elements) {
+  for (j in 1:num_elements) {
+    # intersect() finds common strings, length() counts them
+    common_gene_matrix[i, j] <- length(intersect(list_of_genes[[i]], 
+                                                 list_of_genes[[j]]))
+    common_gene_matrix_normalized[i, j] = 
+      length(intersect(list_of_genes[[i]], list_of_genes[[j]]))/min(length(list_of_genes[[i]]),length(list_of_genes[[j]]))
+  }
+}
+
+
+
+# Generate the heatmap visualization
+pheatmap(common_gene_matrix, 
+         display_numbers = TRUE,       # Show the actual count in each cell
+         number_format = "%.0f",       # Display counts as integers
+         cluster_rows = FALSE,          # Group similar studies together
+         cluster_cols = FALSE, 
+         color = colorRampPalette(c("white", "orange", "red"))(50),
+         main = "Pairwise Gene Overlap Counts Between Configurations Couples",
+         angle_col = 45)
+
+
+rownames(common_gene_matrix_normalized) <- names(list_of_genes)
+colnames(common_gene_matrix_normalized) <- names(list_of_genes)
+common_gene_matrix_normalized_withNA = common_gene_matrix_normalized
+# common_gene_matrix_normalized_withNA[lower.tri(common_gene_matrix_normalized, diag = TRUE)] <- NA
+diag(common_gene_matrix_normalized_withNA) = NA
+
+labels_matrix <- matrix("", nrow = nrow(common_gene_matrix_normalized_withNA), ncol = ncol(common_gene_matrix_normalized_withNA))
+for (i in 1:nrow(common_gene_matrix_normalized_withNA)) {
+  for (j in 1:ncol(common_gene_matrix_normalized_withNA)) {
+    if (!is.na(common_gene_matrix_normalized_withNA[i, j])) {
+      # Formattiamo il numero (es. 2 decimali)
+      labels_matrix[i, j] <- sprintf("%.2f", common_gene_matrix_normalized_withNA[i, j])
+    }
+  }
+}
+
+# Generate the heatmap visualization (normalized version)
+pheatmap(common_gene_matrix_normalized_withNA, 
+         display_numbers = labels_matrix,       # Show the actual count in each cell
+         cluster_rows = FALSE,          # Group similar studies together
+         cluster_cols = FALSE, 
+         color = colorRampPalette(c("white", "orange", "red"))(50),
+         
+         na_col = "grey10",              # Colora i NA di nero
+         number_format = "%.2f",        # Formato per i numeri (es. 2 decimali)
+         
+         main = "Pairwise Gene Overlap Fractions Between Configurations Cuples",
+         angle_col = 45)
+
+
+# 1. Flatten the list of lists into a single vector of all genes found
+# We use unique() inside lapply to ensure each gene is counted only once per list
+unique_genes_per_list <- lapply(list_of_genes, unique)
+all_genes_combined <- unlist(unique_genes_per_list)
+
+# 2. Create a frequency table (Frequency of each gene across the 8 lists)
+gene_frequency_counts <- table(all_genes_combined)
+
+# 3. Convert the table to a data frame for easier manipulation
+gene_frequency_df <- as.data.frame(gene_frequency_counts)
+colnames(gene_frequency_df) <- c("Gene_Name", "Occurrence_Count")
+
+# 4. Sort the data frame by frequency in descending order
+gene_frequency_sorted <- gene_frequency_df[order(-gene_frequency_df$Occurrence_Count), ]
+
+# 1. Select the Top 25 most frequent genes
+num_ofTopGenes_identified = 50
+topN_genes_identified <- head(gene_frequency_sorted, num_ofTopGenes_identified)
+
+par(mfrow = c(1, 1))
+# 2. Create the Bar Plot
+# Adjust margins to fit long gene names if necessary
+par(mar = c(8, 4, 4, 2)) 
+
+barplot_heights <- topN_genes_identified$Occurrence_Count
+gene_labels <- topN_genes_identified$Gene_Name
+
+barplot_title = paste0("Top ", num_ofTopGenes_identified, 
+                       " Most Frequent Genes Across Configurations")
+# Draw the barplot
+bp <- barplot(barplot_heights, 
+              main = barplot_title,
+              ylab = "Number of Lists (out of 8)",
+              col = "steelblue",
+              names.arg = "", # We will add labels manually for better control
+              ylim = c(0, 8))
+
+# Add the gene names on the x-axis with 45-degree rotation
+text(x = bp, 
+     y = -0.2, 
+     labels = gene_labels, 
+     srt = 45, 
+     adj = 1, 
+     xpd = TRUE, 
+     cex = 0.8)
+
+# Add a horizontal grid for better readability
+abline(h = 1:8, col = "gray", lty = "dotted")
+
+
+# Draw the barplot
+bp <- barplot(gene_frequency_sorted$Occurrence_Count, 
+              main = "Genes across studies",
+              ylab = "Number of Lists (out of 8)",
+              col = "steelblue",
+              names.arg = "", # We will add labels manually for better control
+              ylim = c(0, 8))
+
+# Add the gene names on the x-axis with 45-degree rotation
+text(x = bp, 
+     y = -0.2, 
+     labels = gene_frequency_sorted$Gene_Name, 
+     srt = 45, 
+     adj = 1, 
+     xpd = TRUE, 
+     cex = 0.3)
+
+# Add a horizontal grid for better readability
+abline(h = 1:8, col = "gray", lty = "dotted")
+
+
+
+
+```
+
+
+
